@@ -45,6 +45,12 @@ wandb/
 data/
 **/data/
 
+# Keep code under basicsr/data tracked
+!basicsr/data/
+!basicsr/data/**/*.py
+!basicsr/data/meta_info/
+!basicsr/data/meta_info/*.txt
+
 # Generated images / arrays
 *.png
 *.jpg
