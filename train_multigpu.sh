@@ -14,4 +14,4 @@ gpu_count=$((gpu_count + 1))
 # CUDA_VISIBLE_DEVICES=$gpu_ids python -m torch.distributed.launch --nproc_per_node=$gpu_count --master_port=$master_port basicsr/train.py --opt $config --launcher pytorch
 
 # pytorch2.x
-CUDA_VISIBLE_DEVICES=$gpu_ids torchrun --nproc_per_node=$gpu_count --master_port=$master_port basicsr/train.py --opt $config --launcher pytorch
+CUDA_VISIBLE_DEVICES=$gpu_ids PYTHONPATH="$(pwd):${PYTHONPATH}" torchrun --nproc_per_node=$gpu_count --master_port=$master_port -m basicsr.train --opt $config --launcher pytorch

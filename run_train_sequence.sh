@@ -15,6 +15,7 @@ CONFIGS=("$@")
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
+export PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}"
 
 GPU_IDS="${GPU_IDS:-0,1,2,3}"
 MASTER_PORT_BASE="${MASTER_PORT_BASE:-4321}"
@@ -22,7 +23,7 @@ MASTER_PORT_BASE="${MASTER_PORT_BASE:-4321}"
 run_single() {
   local cfg="$1"
   echo "[RUN][single] $cfg"
-  python basicsr/train.py --opt "$cfg"
+  PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}" python -m basicsr.train --opt "$cfg"
 }
 
 run_multi() {
