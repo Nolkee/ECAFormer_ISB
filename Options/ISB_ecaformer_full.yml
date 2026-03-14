@@ -84,7 +84,7 @@ train:
 
 val:
   window_size: 4
-  val_freq: !!float 2500
+  val_freq: !!float 1000
   save_img: true
   rgb2bgr: true
   use_image: false
@@ -106,7 +106,7 @@ val:
       use_gpu: true
 
 logger:
-  print_freq: 200
+  print_freq: 50
   save_checkpoint_freq: !!float 5000
   use_tb_logger: true
   wandb:
