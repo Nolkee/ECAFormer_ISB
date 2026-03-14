@@ -267,4 +267,4 @@ if __name__ == '__main__':
     n_param = sum([p.nelement() for p in model.parameters()])
     print(f'GMac:{flops.total() / (1024 * 1024 * 1024)}')
     print(f'Params:{n_param}')
-    model.load_state_dict(torch.load("./LOL-v1.pth")['params'])
+    model.load_state_dict(torch.load("./LOL-v1.pth", weights_only=True)['params'])

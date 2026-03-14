@@ -173,9 +173,15 @@ def main():
     # load resume states if necessary，resume_state是重新训练的时候接上的吗？
     if opt['path'].get('resume_state'):
         device_id = torch.cuda.current_device()
-        resume_state = torch.load(
-            opt['path']['resume_state'],
-            map_location=lambda storage, loc: storage.cuda(device_id))
+        try:
+            resume_state = torch.load(
+                opt['path']['resume_state'],
+                map_location=lambda storage, loc: storage.cuda(device_id),
+                weights_only=True)
+        except TypeError:
+            resume_state = torch.load(
+                opt['path']['resume_state'],
+                map_location=lambda storage, loc: storage.cuda(device_id))
     else:
         resume_state = None
 
@@ -305,6 +311,7 @@ def main():
             # print(lq.shape)
             model.feed_train_data({'lq': lq, 'gt': gt})
             model.optimize_parameters(current_iter)
+            model.step_learning_rate(current_iter)
 
             iter_time = time.time() - iter_time
             # log

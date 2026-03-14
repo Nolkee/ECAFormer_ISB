@@ -21,7 +21,8 @@ import torch.nn.functional as F
 from functools import partial
 
 try :
-    from torch.cuda.amp import autocast, GradScaler
+    from torch.amp import autocast
+    from torch.cuda.amp import GradScaler
     load_amp = True
 except:
     load_amp = False
@@ -171,7 +172,7 @@ class ImageCleanModel(BaseModel):
     def optimize_parameters(self, current_iter):
         self.optimizer_g.zero_grad()
 
-        with autocast(enabled=self.use_amp):
+        with autocast(device_type='cuda', enabled=self.use_amp):
             preds = self.net_g(self.lq)
             if not isinstance(preds, list):
                 preds = [preds]

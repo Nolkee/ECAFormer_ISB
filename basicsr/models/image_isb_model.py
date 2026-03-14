@@ -63,16 +63,29 @@ class ImageISBModel(ImageCleanModel):
             f"accumulate_steps={self.accumulate_steps}"
         )
 
+    def _has_nonfinite_grad(self):
+        for p in self.net_g.parameters():
+            if p.grad is not None and not torch.isfinite(p.grad).all():
+                return True
+        return False
+
+    def step_learning_rate(self, current_iter):
+        # For gradient accumulation, step scheduler only when optimizer steps.
+        if current_iter % self.accumulate_steps == 0:
+            super().step_learning_rate(current_iter)
+
     def optimize_parameters(self, current_iter):
         """
         Training step with x0-prediction loss (requirement #5).
 
         """
+        logger = get_root_logger()
+
         # Start of a new accumulation window.
-        if current_iter % self.accumulate_steps == 0:
+        if (current_iter - 1) % self.accumulate_steps == 0:
             self.optimizer_g.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=self.use_amp):
+        with torch.amp.autocast('cuda', enabled=self.use_amp):
             preds = self.net_g(self.lq, self.gt)
 
         if isinstance(preds, tuple) and len(preds) == 3:
@@ -83,21 +96,39 @@ class ImageISBModel(ImageCleanModel):
             if isinstance(self.output, tuple):
                 self.output = self.output[0]
             loss = F.l1_loss(self.output, self.gt)
-            
+            if not torch.isfinite(loss):
+                raise FloatingPointError(f'Non-finite fallback loss at iter {current_iter}: {loss.item()}')
+
             self.amp_scaler.scale(loss).backward()
+            self.amp_scaler.unscale_(self.optimizer_g)
             if self.opt['train'].get('use_grad_clip', False):
-                self.amp_scaler.unscale_(self.optimizer_g)
                 torch.nn.utils.clip_grad_norm_(
                     self.net_g.parameters(),
                     self.opt['train'].get('grad_clip_value', 1.0)
                 )
+            if self._has_nonfinite_grad():
+                logger.warning(f'Non-finite gradients detected at iter {current_iter}, skipping optimizer step.')
+                self.optimizer_g.zero_grad(set_to_none=True)
+                self.amp_scaler.update()
+                self.log_dict = {'l_pix': loss.item()}
+                return
+
             self.amp_scaler.step(self.optimizer_g)
             self.amp_scaler.update()
-            
+
             self.log_dict = {'l_pix': loss.item()}
             return
 
         self.output = predicted_x0
+        if not torch.isfinite(self.output).all():
+            raise FloatingPointError(f'Non-finite model output at iter {current_iter}.')
+        with torch.no_grad():
+            out_min = self.output.detach().amin().item()
+            out_max = self.output.detach().amax().item()
+        if out_min < -0.05 or out_max > 1.05:
+            logger.warning(
+                f'Output range out of expected [0,1] at iter {current_iter}: '
+                f'min={out_min:.4f}, max={out_max:.4f}')
 
         loss_dict = OrderedDict()
 
@@ -119,30 +150,38 @@ class ImageISBModel(ImageCleanModel):
             + self.pixel_loss_weight * l_pix
             + self.tv_loss_weight * l_tv
         )
+        if not torch.isfinite(l_total):
+            raise FloatingPointError(
+                f'Non-finite total loss at iter {current_iter}: '
+                f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}')
+
         loss_dict['l_total'] = l_total
 
         # Gradient accumulation: divide loss so gradients average correctly
-        l_total = l_total / self.accumulate_steps
+        scaled_total = l_total / self.accumulate_steps
 
         # Backward constructs the gradient sum over multiple un-stepped passes
-        self.amp_scaler.scale(l_total).backward()
+        self.amp_scaler.scale(scaled_total).backward()
 
-        if (current_iter + 1) % self.accumulate_steps == 0:
+        if current_iter % self.accumulate_steps == 0:
+            # Must unscale before clipping gradients in AMP
+            self.amp_scaler.unscale_(self.optimizer_g)
             if self.opt['train'].get('use_grad_clip', False):
-                # Must unscale before clipping gradients in AMP
-                self.amp_scaler.unscale_(self.optimizer_g)
                 torch.nn.utils.clip_grad_norm_(
                     self.net_g.parameters(),
                     self.opt['train'].get('grad_clip_value', 1.0)
                 )
 
-            self.amp_scaler.step(self.optimizer_g)
-            self.amp_scaler.update()
-            # Zero out gradients only after stepping
-            self.optimizer_g.zero_grad()
+            if self._has_nonfinite_grad():
+                logger.warning(f'Non-finite gradients detected at iter {current_iter}, skipping optimizer step.')
+                self.optimizer_g.zero_grad(set_to_none=True)
+                self.amp_scaler.update()
+            else:
+                self.amp_scaler.step(self.optimizer_g)
+                self.amp_scaler.update()
+                # Zero out gradients only after stepping
+                self.optimizer_g.zero_grad(set_to_none=True)
 
-        # Multiply log loss back to display correctly on TensorBoard/Console
-        loss_dict['l_total'] = l_total * self.accumulate_steps
         self.log_dict = self.reduce_loss_dict(loss_dict)
 
         if self.ema_decay > 0:

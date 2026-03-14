@@ -188,9 +188,6 @@ class BaseModel():
             warmup_iter (int)： Warmup iter numbers. -1 for no warmup.
                 Default： -1.
         """
-        if current_iter > 1:
-            for scheduler in self.schedulers:
-                scheduler.step()
         # set up warm-up learning rate
         if current_iter < warmup_iter:
             # get initial lr for each group
@@ -203,6 +200,12 @@ class BaseModel():
                     [v / warmup_iter * current_iter for v in init_lr_g])
             # set learning rate
             self._set_lr(warm_up_lr_l)
+
+    def step_learning_rate(self, current_iter):
+        """Step LR schedulers after optimizer.step()."""
+        if current_iter > 1:
+            for scheduler in self.schedulers:
+                scheduler.step()
 
     def get_current_learning_rate(self):
         return [
@@ -292,8 +295,12 @@ class BaseModel():
         net = self.get_bare_model(net)
         logger.info(
             f'Loading {net.__class__.__name__} model from {load_path}.')
-        load_net = torch.load(
-            load_path, map_location=lambda storage, loc: storage)
+        try:
+            load_net = torch.load(
+                load_path, map_location=lambda storage, loc: storage, weights_only=True)
+        except TypeError:
+            load_net = torch.load(
+                load_path, map_location=lambda storage, loc: storage)
         if param_key is not None:
             if param_key not in load_net and 'params' in load_net:
                 param_key = 'params'
