@@ -1,0 +1,4 @@
+round,run,best_iter,psnr,ssim,lpips,note
+2,S7,1500,14.7074,0.4337,0.4558,nfe8 sigma0.15 lr1e-4
+2,S8,3000,15.4832,0.5344,0.5164,nfe8 sigma0.2 lr8e-5
+2,S9,3000,15.4222,0.5275,0.5154,x0/pixel=0.3/0.7

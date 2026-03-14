@@ -1,0 +1,8 @@
+round,run,config_file,sigma_max,lr,x0_loss_weight,pixel_loss_weight,best_iter,psnr,ssim,lpips,status
+3,S10,ISB_ecaformer_screen_S10.yml,0.20,8e-5,0.5,0.5,,,,,pending
+3,S11,ISB_ecaformer_screen_S11.yml,0.18,8e-5,0.5,0.5,,,,,pending
+3,S12,ISB_ecaformer_screen_S12.yml,0.22,8e-5,0.5,0.5,,,,,pending
+3,S13,ISB_ecaformer_screen_S13.yml,0.20,7e-5,0.5,0.5,,,,,pending
+3,S14,ISB_ecaformer_screen_S14.yml,0.20,9e-5,0.5,0.5,,,,,pending
+3,S15,ISB_ecaformer_screen_S15.yml,0.20,8e-5,0.6,0.4,,,,,pending
+3,S16,ISB_ecaformer_screen_S16.yml,0.20,8e-5,0.4,0.6,,,,,pending
