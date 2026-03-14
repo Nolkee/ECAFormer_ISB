@@ -42,7 +42,7 @@ network_g:
   level: 2
   num_blocks: [1, 2, 2]
   nfe: 8
-  sigma_max: 0.15
+  sigma_max: 0.2
   use_checkpoint: true
   use_sb: true
   self_cond_prob: 0.0          # S5 筛选结果: 关闭 self-cond 效果最佳
@@ -75,7 +75,7 @@ train:
     use_identity: true
   optim_g:
     type: Adam
-    lr: !!float 1e-4            # S2 筛选结果: 低 lr 更稳定
+    lr: !!float 8e-5            # S8 筛选结果: 更优
     betas: [0.9, 0.999]
   pixel_opt:
     type: L1Loss
