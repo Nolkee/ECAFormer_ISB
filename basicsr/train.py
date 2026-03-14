@@ -328,14 +328,22 @@ def main():
                 use_image = opt['val'].get('use_image', True)
                 current_metric = model.validation(val_loader, current_iter, tb_logger,
                                                   opt['val']['save_img'], rgb2bgr, use_image)
-                # log cur metric to csv file
+                # log current metrics to csv file
                 logger_metric = get_root_logger(logger_name='metric')
-                metric_str = f'{current_iter},{current_metric}'
-                logger_metric.info(metric_str)
+                metric_results = getattr(model, 'metric_results', None)
+                if metric_results:
+                    metric_str = f'{current_iter}'
+                    for metric_name in opt['val']['metrics'].keys():
+                        metric_str += f',{metric_results[metric_name]}'
+                    logger_metric.info(metric_str)
+                    current_psnr = metric_results.get('psnr', current_metric)
+                else:
+                    logger_metric.info(f'{current_iter},{current_metric}')
+                    current_psnr = current_metric
 
-                # log best metric
-                if best_metric['psnr'] < current_metric:
-                    best_metric['psnr'] = current_metric
+                # log best metric (use PSNR as model selection metric)
+                if best_metric['psnr'] < current_psnr:
+                    best_metric['psnr'] = current_psnr
                     # save best model
                     best_metric['iter'] = current_iter
                     model.save_best(best_metric)
