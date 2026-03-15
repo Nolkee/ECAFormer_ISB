@@ -10,9 +10,10 @@ Implements 8-point design requirements:
 - Handles (predicted_x0, gt, illu_map) tuple from network
 """
 
+import math
 import torch
 import torch.nn.functional as F
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 from basicsr.models.image_restoration_model import ImageCleanModel
 from basicsr.utils import get_root_logger
@@ -50,17 +51,41 @@ class ImageISBModel(ImageCleanModel):
         self.pixel_loss_weight = train_opt.get('pixel_loss_weight', 0.1)
         self.tv_loss_weight = train_opt.get('tv_loss_weight', 0.01)
         self.accumulate_steps = int(train_opt.get('accumulate_steps', 1))
+        self.use_grad_clip = bool(train_opt.get('use_grad_clip', True))
+        self.grad_clip_value = float(train_opt.get('grad_clip_value', 1.0))
+        self.strict_output_range = bool(train_opt.get('strict_output_range', True))
+        self.nan_guard = bool(train_opt.get('nan_guard', True))
+        self.output_range_log_interval = int(
+            train_opt.get('output_range_log_interval', 200)
+        )
+        self.train_psnr_window = int(train_opt.get('train_psnr_window', 512))
         if self.accumulate_steps < 1:
             raise ValueError(
                 f"ImageISBModel: accumulate_steps={self.accumulate_steps} is invalid. "
                 "Expected an integer >= 1."
             )
+        if self.grad_clip_value <= 0:
+            raise ValueError(
+                f"ImageISBModel: grad_clip_value={self.grad_clip_value} is invalid. "
+                "Expected a value > 0."
+            )
+
+        # Running diagnostics for stability and overfitting analysis.
+        self._last_range_warn_iter = -10**9
+        self._train_psnr_values = deque(maxlen=max(self.train_psnr_window, 1))
+        self._epoch_raw_out_min = float('inf')
+        self._epoch_raw_out_max = float('-inf')
+        self._epoch_out_min = float('inf')
+        self._epoch_out_max = float('-inf')
+        self._gt_range_warned = False
 
         logger = get_root_logger()
         logger.info(
             f"ImageISBModel v2: x0_w={self.x0_loss_weight}, "
             f"pixel_w={self.pixel_loss_weight}, tv_w={self.tv_loss_weight}, "
-            f"accumulate_steps={self.accumulate_steps}"
+            f"accumulate_steps={self.accumulate_steps}, "
+            f"grad_clip={self.use_grad_clip}, grad_clip_value={self.grad_clip_value}, "
+            f"strict_output_range={self.strict_output_range}, nan_guard={self.nan_guard}"
         )
 
     def _has_nonfinite_grad(self):
@@ -68,6 +93,63 @@ class ImageISBModel(ImageCleanModel):
             if p.grad is not None and not torch.isfinite(p.grad).all():
                 return True
         return False
+
+    @staticmethod
+    def _has_nonfinite_tensor(x):
+        return not torch.isfinite(x).all()
+
+    @staticmethod
+    def _tensor_range(x):
+        with torch.no_grad():
+            return x.detach().amin().item(), x.detach().amax().item()
+
+    def _update_epoch_output_range(self, raw_pred, pred):
+        raw_min, raw_max = self._tensor_range(raw_pred)
+        out_min, out_max = self._tensor_range(pred)
+        self._epoch_raw_out_min = min(self._epoch_raw_out_min, raw_min)
+        self._epoch_raw_out_max = max(self._epoch_raw_out_max, raw_max)
+        self._epoch_out_min = min(self._epoch_out_min, out_min)
+        self._epoch_out_max = max(self._epoch_out_max, out_max)
+        return raw_min, raw_max, out_min, out_max
+
+    def get_epoch_output_range_stats(self, reset=False):
+        has_values = self._epoch_raw_out_min != float('inf')
+        if not has_values:
+            return None
+        stats = {
+            'raw_out_min': self._epoch_raw_out_min,
+            'raw_out_max': self._epoch_raw_out_max,
+            'out_min': self._epoch_out_min,
+            'out_max': self._epoch_out_max
+        }
+        if reset:
+            self._epoch_raw_out_min = float('inf')
+            self._epoch_raw_out_max = float('-inf')
+            self._epoch_out_min = float('inf')
+            self._epoch_out_max = float('-inf')
+        return stats
+
+    def _append_train_psnr(self, pred, gt):
+        # pred/gt are expected in [0, 1], compute batch-level PSNR for trend tracking.
+        with torch.no_grad():
+            mse = F.mse_loss(pred.detach(), gt.detach()).item()
+            psnr = -10.0 * math.log10(max(mse, 1e-12))
+        self._train_psnr_values.append(psnr)
+
+    def get_train_psnr_stats(self, reset=False):
+        if not self._train_psnr_values:
+            return None
+        values = torch.tensor(list(self._train_psnr_values), dtype=torch.float32)
+        stats = {
+            'min': float(values.min().item()),
+            'max': float(values.max().item()),
+            'mean': float(values.mean().item()),
+            'std': float(values.std(unbiased=False).item()),
+            'count': int(values.numel())
+        }
+        if reset:
+            self._train_psnr_values.clear()
+        return stats
 
     def step_learning_rate(self, current_iter):
         # For gradient accumulation, step scheduler only when optimizer steps.
@@ -95,16 +177,28 @@ class ImageISBModel(ImageCleanModel):
             self.output = preds if not isinstance(preds, (list, tuple)) else preds[-1]
             if isinstance(self.output, tuple):
                 self.output = self.output[0]
-            loss = F.l1_loss(self.output, self.gt)
-            if not torch.isfinite(loss):
-                raise FloatingPointError(f'Non-finite fallback loss at iter {current_iter}: {loss.item()}')
+            raw_pred = self.output
+            if self.strict_output_range:
+                self.output = torch.clamp(self.output, 0.0, 1.0)
+            gt_safe = torch.clamp(self.gt, 0.0, 1.0)
+            self._update_epoch_output_range(raw_pred, self.output)
+            self._append_train_psnr(self.output, gt_safe)
+            loss = F.l1_loss(self.output, gt_safe)
+            if self.nan_guard and self._has_nonfinite_tensor(loss):
+                logger.warning(
+                    f'Non-finite fallback loss at iter {current_iter}, skipping optimizer step.'
+                )
+                self.optimizer_g.zero_grad(set_to_none=True)
+                self.amp_scaler.update()
+                self.log_dict = {'l_pix': 0.0}
+                return
 
             self.amp_scaler.scale(loss).backward()
             self.amp_scaler.unscale_(self.optimizer_g)
-            if self.opt['train'].get('use_grad_clip', False):
+            if self.use_grad_clip:
                 torch.nn.utils.clip_grad_norm_(
                     self.net_g.parameters(),
-                    self.opt['train'].get('grad_clip_value', 1.0)
+                    self.grad_clip_value
                 )
             if self._has_nonfinite_grad():
                 logger.warning(f'Non-finite gradients detected at iter {current_iter}, skipping optimizer step.')
@@ -119,16 +213,30 @@ class ImageISBModel(ImageCleanModel):
             self.log_dict = {'l_pix': loss.item()}
             return
 
+        raw_predicted_x0 = predicted_x0
+        gt = torch.clamp(gt, 0.0, 1.0)
+        if self.strict_output_range:
+            predicted_x0 = torch.clamp(predicted_x0, 0.0, 1.0)
         self.output = predicted_x0
-        if not torch.isfinite(self.output).all():
-            raise FloatingPointError(f'Non-finite model output at iter {current_iter}.')
-        with torch.no_grad():
-            out_min = self.output.detach().amin().item()
-            out_max = self.output.detach().amax().item()
-        if out_min < -0.05 or out_max > 1.05:
-            logger.warning(
-                f'Output range out of expected [0,1] at iter {current_iter}: '
-                f'min={out_min:.4f}, max={out_max:.4f}')
+        if self.nan_guard and self._has_nonfinite_tensor(raw_predicted_x0):
+            logger.warning(f'Non-finite model output at iter {current_iter}, skipping optimizer step.')
+            self.optimizer_g.zero_grad(set_to_none=True)
+            self.amp_scaler.update()
+            self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_total': 0.0}
+            return
+        raw_out_min, raw_out_max, out_min, out_max = self._update_epoch_output_range(
+            raw_predicted_x0, predicted_x0
+        )
+        self._append_train_psnr(predicted_x0, gt)
+        if (raw_out_min < 0.0 or raw_out_max > 1.0) and (
+            current_iter - self._last_range_warn_iter >= self.output_range_log_interval
+        ):
+            logger.info(
+                f'Raw output range out of [0,1] at iter {current_iter}: '
+                f'min={raw_out_min:.4f}, max={raw_out_max:.4f}. '
+                f'Clamped range: min={out_min:.4f}, max={out_max:.4f}.'
+            )
+            self._last_range_warn_iter = current_iter
 
         loss_dict = OrderedDict()
 
@@ -150,10 +258,15 @@ class ImageISBModel(ImageCleanModel):
             + self.pixel_loss_weight * l_pix
             + self.tv_loss_weight * l_tv
         )
-        if not torch.isfinite(l_total):
-            raise FloatingPointError(
-                f'Non-finite total loss at iter {current_iter}: '
-                f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}')
+        if self.nan_guard and self._has_nonfinite_tensor(l_total):
+            logger.warning(
+                f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
+                f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}'
+            )
+            self.optimizer_g.zero_grad(set_to_none=True)
+            self.amp_scaler.update()
+            self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_total': 0.0}
+            return
 
         loss_dict['l_total'] = l_total
 
@@ -166,10 +279,10 @@ class ImageISBModel(ImageCleanModel):
         if current_iter % self.accumulate_steps == 0:
             # Must unscale before clipping gradients in AMP
             self.amp_scaler.unscale_(self.optimizer_g)
-            if self.opt['train'].get('use_grad_clip', False):
+            if self.use_grad_clip:
                 torch.nn.utils.clip_grad_norm_(
                     self.net_g.parameters(),
-                    self.opt['train'].get('grad_clip_value', 1.0)
+                    self.grad_clip_value
                 )
 
             if self._has_nonfinite_grad():
@@ -209,9 +322,17 @@ class ImageISBModel(ImageCleanModel):
             self.net_g.train()
 
     def feed_train_data(self, data):
+        logger = get_root_logger()
         self.lq = data['lq'].to(self.device)
         self.gt = data['gt'].to(self.device)
+        gt_min, gt_max = self._tensor_range(self.gt)
+        if (gt_min < 0.0 or gt_max > 1.0) and not self._gt_range_warned:
+            logger.warning(
+                f'GT is out of [0,1] (min={gt_min:.4f}, max={gt_max:.4f}). '
+                'Clamping GT for stability. Please verify dataloader normalization.'
+            )
+            self._gt_range_warned = True
+        self.gt = torch.clamp(self.gt, 0.0, 1.0)
+        self.lq = torch.clamp(self.lq, 0.0, 1.0)
         if self.mixing_flag:
             self.gt, self.lq = self.mixing_augmentation(self.gt, self.lq)
-
-

@@ -14,6 +14,7 @@ Architecture overview:
 """
 
 import math
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -49,6 +50,14 @@ def _no_grad_trunc_normal_(tensor, mean, std, a, b):
 
 def trunc_normal_(tensor, mean=0.0, std=1.0, a=-2.0, b=2.0):
     return _no_grad_trunc_normal_(tensor, mean, std, a, b)
+
+
+def _best_group_count(channels, max_groups=8):
+    """Find a valid GroupNorm group count that divides channels."""
+    for g in range(min(max_groups, channels), 0, -1):
+        if channels % g == 0:
+            return g
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +126,9 @@ class DMSA(nn.Module):
         )
         self.rescale_x = nn.Parameter(torch.ones(heads, 1, 1))
         self.rescale_y = nn.Parameter(torch.ones(heads, 1, 1))
+        # Keep attention residual scaling at identity at initialization.
+        nn.init.constant_(self.rescale_x, 1.0)
+        nn.init.constant_(self.rescale_y, 1.0)
         self.proj_x = nn.Linear(dim_head * heads, dim, bias=True)
         self.proj_y = nn.Linear(dim_head * heads, dim, bias=True)
         self.pos_emb = nn.Sequential(
@@ -127,6 +139,10 @@ class DMSA(nn.Module):
         self.dim = dim
 
     def forward(self, x_in, y_in):
+        if x_in.shape != y_in.shape:
+            raise ValueError(
+                f"DMSA expects x/y with identical shape, got x={tuple(x_in.shape)}, y={tuple(y_in.shape)}."
+            )
         b, h, w, c = x_in.shape
         fusion_k_x = self.fusion_x(
             torch.cat([x_in, y_in], dim=-1).permute(0, 3, 1, 2)
@@ -358,6 +374,9 @@ class CrossAttenUnet_ISB(nn.Module):
 
         # Output: predict residual, add x1 for final x0 prediction
         self.mapping = nn.Conv2d(self.dim * 2, out_dim, 3, 1, 1, bias=False)
+        gn_groups = _best_group_count(self.dim * 2, max_groups=8)
+        self.out_norm = nn.GroupNorm(gn_groups, self.dim * 2)
+        self.out_act = nn.Sigmoid()
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 
         self.apply(self._init_weights)
@@ -368,6 +387,11 @@ class CrossAttenUnet_ISB(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+            if m.weight is not None:
+                nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.GroupNorm):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
             if m.weight is not None:
@@ -408,7 +432,10 @@ class CrossAttenUnet_ISB(nn.Module):
             y = fuse_y(torch.cat([fea_ylist[self.level - 1 - i], y], dim=1))
             x, y = dmsa_block(x, y, t_emb)
 
-        out = self.mapping(torch.cat([x, y], dim=1)) + x1
+        features = torch.cat([x, y], dim=1)
+        features = self.out_norm(features)
+        out = self.mapping(features) + x1
+        out = self.out_act(out)
         return out
 
 
@@ -429,13 +456,21 @@ class ECAFormerISB(nn.Module):
     def __init__(self, in_channels=3, out_channels=3, n_feat=40,
                  level=2, num_blocks=None, nfe=8, sigma_max=0.5,
                  use_checkpoint=True, use_sb=True, self_cond_prob=0.0,
-                 cond_type="adaln", stage=1):
+                 cond_type="adaln", stage=1, min_nfe_for_stability=8):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
 
         self.n_feat = n_feat
-        self.nfe = max(int(nfe), 1)
+        requested_nfe = max(int(nfe), 1)
+        min_nfe_for_stability = max(int(min_nfe_for_stability), 1)
+        if use_sb and requested_nfe < min_nfe_for_stability:
+            warnings.warn(
+                f"ECAFormerISB: nfe={requested_nfe} is low for bridge stability. "
+                f"Using nfe={min_nfe_for_stability} instead.",
+                stacklevel=2,
+            )
+        self.nfe = max(requested_nfe, min_nfe_for_stability) if use_sb else requested_nfe
         self.use_sb = use_sb
         self.self_cond_prob = float(self_cond_prob)
         self.cond_type = str(cond_type).lower()
@@ -468,8 +503,13 @@ class ECAFormerISB(nn.Module):
                     f"ECAFormerISB: cond_type='{self.cond_type}' is invalid. "
                     f"Supported values: 'adaln', 'none'."
                 )
+            if sigma_max > 0.35:
+                warnings.warn(
+                    f"ECAFormerISB: sigma_max={sigma_max} may introduce high bridge variance in early training.",
+                    stacklevel=2,
+                )
             noise_schedule = NoiseSchedule(sigma_max=sigma_max)
-            self.isb_engine = ISBEngine(noise_schedule=noise_schedule, nfe=nfe)
+            self.isb_engine = ISBEngine(noise_schedule=noise_schedule, nfe=self.nfe)
         else:
             # Original ECAFormer (no diffusion)
             self.denoiser = CrossAttenUnet(
@@ -492,7 +532,8 @@ class ECAFormerISB(nn.Module):
     def forward(self, x_low, x_high=None):
         # ShallowDeepConv → visual features + illumination map
         visual_fea, illu_map = self.estimator(x_low)
-        x1 = x_low * illu_map + x_low
+        illu_map = torch.sigmoid(illu_map)
+        x1 = torch.clamp(x_low * illu_map + x_low, 0.0, 1.0)
 
         if not self.use_sb:
             output = self.denoiser(x1, visual_fea)
@@ -521,7 +562,7 @@ class ECAFormerISB(nn.Module):
                 predicted_x0_sc = self.denoiser(x_t, x1, visual_fea, t).detach()
             x1_cond = 0.5 * x1 + 0.5 * predicted_x0_sc
 
-        predicted_x0 = self.denoiser(x_t, x1_cond, visual_fea, t)
+        predicted_x0 = self.denoiser(x_t, x1_cond, visual_fea, t).clamp(0.0, 1.0)
         return predicted_x0, x0, illu_map
 
     def _inference_forward(self, x1, visual_fea):

@@ -250,6 +250,10 @@ class ImageCleanModel(BaseModel):
                 metric: 0
                 for metric in self.opt['val']['metrics'].keys()
             }
+            self.metric_distributions = {
+                metric: []
+                for metric in self.opt['val']['metrics'].keys()
+            }
         # pbar = tqdm(total=len(dataloader), unit='image')
 
         window_size = self.opt['val'].get('window_size', 0)
@@ -306,13 +310,16 @@ class ImageCleanModel(BaseModel):
                 if use_image:
                     for name, opt_ in opt_metric.items():
                         metric_type = opt_.pop('type')
-                        self.metric_results[name] += getattr(
-                            metric_module, metric_type)(sr_img, gt_img, **opt_)
+                        metric_value = getattr(metric_module, metric_type)(sr_img, gt_img, **opt_)
+                        self.metric_results[name] += metric_value
+                        self.metric_distributions[name].append(float(metric_value))
                 else:
                     for name, opt_ in opt_metric.items():
                         metric_type = opt_.pop('type')
-                        self.metric_results[name] += getattr(
+                        metric_value = getattr(
                             metric_module, metric_type)(visuals['result'], visuals['gt'], **opt_)
+                        self.metric_results[name] += metric_value
+                        self.metric_distributions[name].append(float(metric_value))
 
             cnt += 1
 
@@ -330,7 +337,15 @@ class ImageCleanModel(BaseModel):
                                       tb_logger):
         log_str = f'Validation {dataset_name},\t'
         for metric, value in self.metric_results.items():
-            log_str += f'\t # {metric}: {value:.4f}'
+            dist = self.metric_distributions.get(metric, [])
+            if dist:
+                arr = np.asarray(dist, dtype=np.float32)
+                log_str += (
+                    f'\t # {metric}: {value:.4f}'
+                    f' (min={arr.min():.4f}, max={arr.max():.4f}, std={arr.std():.4f})'
+                )
+            else:
+                log_str += f'\t # {metric}: {value:.4f}'
         logger = get_root_logger()
         logger.info(log_str)
         if tb_logger:

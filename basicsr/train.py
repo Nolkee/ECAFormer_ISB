@@ -348,6 +348,31 @@ def main():
                     logger_metric.info(f'{current_iter},{current_metric}')
                     current_psnr = current_metric
 
+                # Train/Val PSNR distribution diagnostics.
+                if hasattr(model, 'get_train_psnr_stats'):
+                    train_psnr_stats = model.get_train_psnr_stats(reset=False)
+                    if train_psnr_stats is not None:
+                        logger.info(
+                            'Train PSNR window stats: '
+                            f"mean={train_psnr_stats['mean']:.4f}, "
+                            f"std={train_psnr_stats['std']:.4f}, "
+                            f"min={train_psnr_stats['min']:.4f}, "
+                            f"max={train_psnr_stats['max']:.4f}, "
+                            f"count={train_psnr_stats['count']}"
+                        )
+                        val_psnr = None
+                        if metric_results:
+                            val_psnr = metric_results.get('psnr', None)
+                        if val_psnr is not None:
+                            psnr_gap = train_psnr_stats['mean'] - float(val_psnr)
+                            if psnr_gap > float(opt['train'].get('psnr_gap_warn', 2.0)):
+                                weight_decay = opt['train']['optim_g'].get('weight_decay', 0.0)
+                                logger.warning(
+                                    f'Train/Val PSNR gap={psnr_gap:.4f} dB '
+                                    f'(train={train_psnr_stats["mean"]:.4f}, val={float(val_psnr):.4f}). '
+                                    f'Consider increasing weight_decay (current={weight_decay}).'
+                                )
+
                 # log best metric (use PSNR as model selection metric)
                 if best_metric['psnr'] < current_psnr:
                     best_metric['psnr'] = current_psnr
@@ -365,6 +390,16 @@ def main():
             iter_time = time.time()
             train_data = prefetcher.next()
         # end of iter
+        if hasattr(model, 'get_epoch_output_range_stats'):
+            out_stats = model.get_epoch_output_range_stats(reset=True)
+            if out_stats is not None:
+                logger.info(
+                    f'Epoch {epoch} output range: '
+                    f'raw_min={out_stats["raw_out_min"]:.4f}, '
+                    f'raw_max={out_stats["raw_out_max"]:.4f}, '
+                    f'clamped_min={out_stats["out_min"]:.4f}, '
+                    f'clamped_max={out_stats["out_max"]:.4f}'
+                )
         epoch += 1
 
     # end of epoch
