@@ -1,0 +1,4 @@
+run,status,best_iter,best_psnr,best_ssim,best_lpips,last_iter,last_psnr,last_ssim,last_lpips,recommended_ckpt,latest_ckpt
+ISB_ecaformer_screen_S17,missing,,,,,,,,,,experiments/ISB_ecaformer_screen_S17/models/net_g_latest.pth
+ISB_ecaformer_screen_S18,missing,,,,,,,,,,experiments/ISB_ecaformer_screen_S18/models/net_g_latest.pth
+ISB_ecaformer_screen_S19,missing,,,,,,,,,,experiments/ISB_ecaformer_screen_S19/models/net_g_latest.pth
