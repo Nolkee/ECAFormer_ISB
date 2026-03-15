@@ -1,0 +1,4 @@
+round,run,group,hypothesis,sigma_max,nfe,lr,x0_loss_weight,pixel_loss_weight,tv_loss_weight,best_iter,psnr,ssim,lpips,status
+4,S17,A_low_sigma,Lower bridge noise reduces mismatch and should improve PSNR/SSIM,0.10,8,8e-5,0.5,0.5,0.01,,,,,pending
+4,S18,B_pixel_align,Higher pixel supervision should better align optimization with PSNR/SSIM,0.22,8,8e-5,0.4,0.6,0.01,,,,,pending
+4,S19,C_conservative,Conservative bridge (lower sigma/lr/nfe) may improve stability and final quality,0.10,4,6e-5,0.5,0.5,0.01,,,,,pending
