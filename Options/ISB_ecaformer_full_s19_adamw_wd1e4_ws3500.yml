@@ -1,10 +1,10 @@
-name: ISB_ecaformer_full_s19_adamw_wd1e4
+name: ISB_ecaformer_full_s19_adamw_wd1e4_ws3500
 model_type: ImageISBModel
 scale: 1
 num_gpu: 1
 manual_seed: 100
 
-# S19 full ablation A: AdamW + weight_decay=1e-4
+# Warm-start from the previous best checkpoint at iter 3500.
 
 datasets:
   train:
@@ -49,7 +49,7 @@ network_g:
   cond_type: adaln
 
 path:
-  pretrain_network_g: ~
+  pretrain_network_g: experiments/ISB_ecaformer_full_s19_adamw_wd1e4/best_psnr_19.47_3500.pth
   strict_load_g: true
   resume_state: ~
 
