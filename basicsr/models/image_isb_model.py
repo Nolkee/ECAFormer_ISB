@@ -77,6 +77,11 @@ class ImageISBModel(ImageCleanModel):
         self._epoch_raw_out_max = float('-inf')
         self._epoch_out_min = float('inf')
         self._epoch_out_max = float('-inf')
+        self._epoch_raw_out_sum = 0.0
+        self._epoch_raw_out_sum_sq = 0.0
+        self._epoch_out_sum = 0.0
+        self._epoch_out_sum_sq = 0.0
+        self._epoch_out_count = 0
         self._gt_range_warned = False
         self._nan_skip_count_epoch = 0
         self._nan_skip_count_total = 0
@@ -112,23 +117,46 @@ class ImageISBModel(ImageCleanModel):
         self._epoch_raw_out_max = max(self._epoch_raw_out_max, raw_max)
         self._epoch_out_min = min(self._epoch_out_min, out_min)
         self._epoch_out_max = max(self._epoch_out_max, out_max)
+        with torch.no_grad():
+            raw_det = raw_pred.detach()
+            pred_det = pred.detach()
+            self._epoch_raw_out_sum += float(raw_det.sum().item())
+            self._epoch_raw_out_sum_sq += float((raw_det * raw_det).sum().item())
+            self._epoch_out_sum += float(pred_det.sum().item())
+            self._epoch_out_sum_sq += float((pred_det * pred_det).sum().item())
+            self._epoch_out_count += int(pred_det.numel())
         return raw_min, raw_max, out_min, out_max
 
     def get_epoch_output_range_stats(self, reset=False):
-        has_values = self._epoch_raw_out_min != float('inf')
+        has_values = self._epoch_raw_out_min != float('inf') and self._epoch_out_count > 0
         if not has_values:
             return None
+        count = float(self._epoch_out_count)
+        raw_mean = self._epoch_raw_out_sum / count
+        raw_var = max(self._epoch_raw_out_sum_sq / count - raw_mean * raw_mean, 0.0)
+        out_mean = self._epoch_out_sum / count
+        out_var = max(self._epoch_out_sum_sq / count - out_mean * out_mean, 0.0)
         stats = {
             'raw_out_min': self._epoch_raw_out_min,
             'raw_out_max': self._epoch_raw_out_max,
+            'raw_out_mean': raw_mean,
+            'raw_out_std': math.sqrt(raw_var),
             'out_min': self._epoch_out_min,
-            'out_max': self._epoch_out_max
+            'out_max': self._epoch_out_max,
+            'out_mean': out_mean,
+            'out_std': math.sqrt(out_var),
+            'out_count': self._epoch_out_count
         }
         if reset:
             self._epoch_raw_out_min = float('inf')
             self._epoch_raw_out_max = float('-inf')
             self._epoch_out_min = float('inf')
             self._epoch_out_max = float('-inf')
+            self._epoch_raw_out_sum = 0.0
+            self._epoch_raw_out_sum_sq = 0.0
+            self._epoch_out_sum = 0.0
+            self._epoch_out_sum_sq = 0.0
+            self._epoch_out_count = 0
         return stats
 
     def _append_train_psnr(self, pred, gt):

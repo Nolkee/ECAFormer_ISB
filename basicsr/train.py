@@ -447,8 +447,12 @@ def main():
                     f'Epoch {epoch} output range: '
                     f'raw_min={out_stats["raw_out_min"]:.4f}, '
                     f'raw_max={out_stats["raw_out_max"]:.4f}, '
+                    f'raw_mean={out_stats["raw_out_mean"]:.4f}, '
+                    f'raw_std={out_stats["raw_out_std"]:.4f}, '
                     f'clamped_min={out_stats["out_min"]:.4f}, '
-                    f'clamped_max={out_stats["out_max"]:.4f}'
+                    f'clamped_max={out_stats["out_max"]:.4f}, '
+                    f'clamped_mean={out_stats["out_mean"]:.4f}, '
+                    f'clamped_std={out_stats["out_std"]:.4f}'
                 )
         if hasattr(model, 'get_nan_skip_stats'):
             nan_stats = model.get_nan_skip_stats(reset=True)
