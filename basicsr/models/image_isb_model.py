@@ -4,7 +4,7 @@ ImageISBModel: Training model for RetinexFormer + I2SB (v2)
 
 Implements 8-point design requirements:
 - x0 prediction MSE as primary loss
-- Pixel L1 at 0.1 weight (secondary)
+- Pixel L1 with configurable weight (secondary)
 - TV loss on illumination map for smoothness
 - FP32 enforcement for P40
 - Handles (predicted_x0, gt, illu_map) tuple from network
@@ -32,7 +32,7 @@ class ImageISBModel(ImageCleanModel):
 
     Loss design (requirement #5):
     - Primary: MSE(predicted_x0, gt) — x0 reconstruction loss
-    - Secondary: L1(predicted_x0, gt) * 0.1 — pixel-level auxiliary
+    - Secondary: L1(predicted_x0, gt) * pixel_weight — pixel-level auxiliary
     - Regularization: TV(illu_map) — illumination smoothness
 
     Config keys:
@@ -54,6 +54,9 @@ class ImageISBModel(ImageCleanModel):
         self.use_grad_clip = bool(train_opt.get('use_grad_clip', True))
         self.grad_clip_value = float(train_opt.get('grad_clip_value', 1.0))
         self.strict_output_range = bool(train_opt.get('strict_output_range', True))
+        self.loss_on_clamped_output = bool(
+            train_opt.get('loss_on_clamped_output', True)
+        )
         self.nan_guard = bool(train_opt.get('nan_guard', True))
         self.output_range_log_interval = int(
             train_opt.get('output_range_log_interval', 200)
@@ -85,6 +88,8 @@ class ImageISBModel(ImageCleanModel):
         self._gt_range_warned = False
         self._nan_skip_count_epoch = 0
         self._nan_skip_count_total = 0
+        self._nan_skip_by_reason_epoch = self._new_nan_reason_counter()
+        self._nan_skip_by_reason_total = self._new_nan_reason_counter()
 
         logger = get_root_logger()
         logger.info(
@@ -92,8 +97,20 @@ class ImageISBModel(ImageCleanModel):
             f"pixel_w={self.pixel_loss_weight}, tv_w={self.tv_loss_weight}, "
             f"accumulate_steps={self.accumulate_steps}, "
             f"grad_clip={self.use_grad_clip}, grad_clip_value={self.grad_clip_value}, "
-            f"strict_output_range={self.strict_output_range}, nan_guard={self.nan_guard}"
+            f"strict_output_range={self.strict_output_range}, "
+            f"loss_on_clamped_output={self.loss_on_clamped_output}, "
+            f"nan_guard={self.nan_guard}"
         )
+
+    @staticmethod
+    def _new_nan_reason_counter():
+        return {
+            'output_nonfinite': 0,
+            'loss_nonfinite': 0,
+            'grad_nonfinite': 0,
+            'fallback_loss_nonfinite': 0,
+            'unknown': 0
+        }
 
     def _has_nonfinite_grad(self):
         for p in self.net_g.parameters():
@@ -166,9 +183,13 @@ class ImageISBModel(ImageCleanModel):
             psnr = -10.0 * math.log10(max(mse, 1e-12))
         self._train_psnr_values.append(psnr)
 
-    def _mark_nan_skip(self):
+    def _mark_nan_skip(self, reason='unknown'):
         self._nan_skip_count_epoch += 1
         self._nan_skip_count_total += 1
+        if reason not in self._nan_skip_by_reason_epoch:
+            reason = 'unknown'
+        self._nan_skip_by_reason_epoch[reason] += 1
+        self._nan_skip_by_reason_total[reason] += 1
 
     def get_train_psnr_stats(self, reset=False):
         if not self._train_psnr_values:
@@ -188,10 +209,13 @@ class ImageISBModel(ImageCleanModel):
     def get_nan_skip_stats(self, reset=False):
         stats = {
             'epoch_nan_skip': int(self._nan_skip_count_epoch),
-            'total_nan_skip': int(self._nan_skip_count_total)
+            'total_nan_skip': int(self._nan_skip_count_total),
+            'epoch_nan_skip_by_reason': dict(self._nan_skip_by_reason_epoch),
+            'total_nan_skip_by_reason': dict(self._nan_skip_by_reason_total)
         }
         if reset:
             self._nan_skip_count_epoch = 0
+            self._nan_skip_by_reason_epoch = self._new_nan_reason_counter()
         return stats
 
     def step_learning_rate(self, current_iter):
@@ -221,17 +245,21 @@ class ImageISBModel(ImageCleanModel):
             if isinstance(self.output, tuple):
                 self.output = self.output[0]
             raw_pred = self.output
-            if self.strict_output_range:
-                self.output = torch.clamp(self.output, 0.0, 1.0)
+            pred_for_eval = (
+                torch.clamp(raw_pred, 0.0, 1.0)
+                if self.strict_output_range else raw_pred
+            )
+            self.output = pred_for_eval
             gt_safe = torch.clamp(self.gt, 0.0, 1.0)
-            self._update_epoch_output_range(raw_pred, self.output)
-            self._append_train_psnr(self.output, gt_safe)
-            loss = F.l1_loss(self.output, gt_safe)
+            self._update_epoch_output_range(raw_pred, pred_for_eval)
+            self._append_train_psnr(pred_for_eval, gt_safe)
+            pred_for_loss = pred_for_eval if self.loss_on_clamped_output else raw_pred
+            loss = F.l1_loss(pred_for_loss, gt_safe)
             if self.nan_guard and self._has_nonfinite_tensor(loss):
                 logger.warning(
                     f'Non-finite fallback loss at iter {current_iter}, skipping optimizer step.'
                 )
-                self._mark_nan_skip()
+                self._mark_nan_skip('fallback_loss_nonfinite')
                 self.optimizer_g.zero_grad(set_to_none=True)
                 self.amp_scaler.update()
                 self.log_dict = {'l_pix': 0.0}
@@ -246,7 +274,7 @@ class ImageISBModel(ImageCleanModel):
                 )
             if self._has_nonfinite_grad():
                 logger.warning(f'Non-finite gradients detected at iter {current_iter}, skipping optimizer step.')
-                self._mark_nan_skip()
+                self._mark_nan_skip('grad_nonfinite')
                 self.optimizer_g.zero_grad(set_to_none=True)
                 self.amp_scaler.update()
                 self.log_dict = {'l_pix': loss.item()}
@@ -260,20 +288,25 @@ class ImageISBModel(ImageCleanModel):
 
         raw_predicted_x0 = predicted_x0
         gt = torch.clamp(gt, 0.0, 1.0)
-        if self.strict_output_range:
-            predicted_x0 = torch.clamp(predicted_x0, 0.0, 1.0)
-        self.output = predicted_x0
+        predicted_x0_eval = (
+            torch.clamp(raw_predicted_x0, 0.0, 1.0)
+            if self.strict_output_range else raw_predicted_x0
+        )
+        predicted_x0_for_loss = (
+            predicted_x0_eval if self.loss_on_clamped_output else raw_predicted_x0
+        )
+        self.output = predicted_x0_eval
         if self.nan_guard and self._has_nonfinite_tensor(raw_predicted_x0):
             logger.warning(f'Non-finite model output at iter {current_iter}, skipping optimizer step.')
-            self._mark_nan_skip()
+            self._mark_nan_skip('output_nonfinite')
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
             self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_total': 0.0}
             return
         raw_out_min, raw_out_max, out_min, out_max = self._update_epoch_output_range(
-            raw_predicted_x0, predicted_x0
+            raw_predicted_x0, predicted_x0_eval
         )
-        self._append_train_psnr(predicted_x0, gt)
+        self._append_train_psnr(predicted_x0_eval, gt)
         if (raw_out_min < 0.0 or raw_out_max > 1.0) and (
             current_iter - self._last_range_warn_iter >= self.output_range_log_interval
         ):
@@ -287,11 +320,11 @@ class ImageISBModel(ImageCleanModel):
         loss_dict = OrderedDict()
 
         # Primary: x0 prediction MSE
-        l_x0 = F.mse_loss(predicted_x0, gt)
+        l_x0 = F.mse_loss(predicted_x0_for_loss, gt)
         loss_dict['l_x0'] = l_x0
 
-        # Secondary: L1 pixel loss (weight 0.1)
-        l_pix = F.l1_loss(predicted_x0, gt)
+        # Secondary: L1 pixel loss (configurable weight)
+        l_pix = F.l1_loss(predicted_x0_for_loss, gt)
         loss_dict['l_pix'] = l_pix
 
         # TV loss on illumination map
@@ -309,7 +342,7 @@ class ImageISBModel(ImageCleanModel):
                 f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
                 f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}'
             )
-            self._mark_nan_skip()
+            self._mark_nan_skip('loss_nonfinite')
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
             self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_total': 0.0}
@@ -334,7 +367,7 @@ class ImageISBModel(ImageCleanModel):
 
             if self._has_nonfinite_grad():
                 logger.warning(f'Non-finite gradients detected at iter {current_iter}, skipping optimizer step.')
-                self._mark_nan_skip()
+                self._mark_nan_skip('grad_nonfinite')
                 self.optimizer_g.zero_grad(set_to_none=True)
                 self.amp_scaler.update()
             else:

@@ -1,0 +1,4 @@
+round,run,config,best_iter,best_psnr,best_ssim,best_lpips,last_iter,last_psnr,last_ssim,last_lpips,status,notes
+5,ISB_ecaformer_full_s19_r5_a_wd3e4_tvlow,Options/ISB_ecaformer_full_s19_r5_a_wd3e4_tvlow.yml,,,,,,,,,pending,
+5,ISB_ecaformer_full_s19_r5_b_identity_softloss,Options/ISB_ecaformer_full_s19_r5_b_identity_softloss.yml,,,,,,,,,pending,
+5,ISB_ecaformer_full_s19_r5_c_noamp,Options/ISB_ecaformer_full_s19_r5_c_noamp.yml,,,,,,,,,pending,

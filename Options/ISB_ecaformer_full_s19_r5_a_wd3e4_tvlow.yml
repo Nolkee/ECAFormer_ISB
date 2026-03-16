@@ -1,11 +1,11 @@
-name: ECAFormer_baseline_fair
-model_type: ImageCleanModel
+name: ISB_ecaformer_full_s19_r5_a_wd3e4_tvlow
+model_type: ImageISBModel
 scale: 1
 num_gpu: 1
 manual_seed: 100
 
-# Baseline 公平对比配置
-# optimizer step = 16667 (与 ISB 的 50000 iter / accumulate 3 对齐)
+# Round5-A: prioritize generalization and stability.
+# Changes vs S19 full: AdamW + higher wd, stronger clipping, lower TV, pixel-heavy loss.
 
 datasets:
   train:
@@ -19,12 +19,12 @@ datasets:
       type: disk
     use_shuffle: true
     num_worker_per_gpu: 8
+    dataset_enlarge_ratio: 1
     batch_size_per_gpu: 24
     mini_batch_sizes: [24]
     iters: [16667]
     gt_size: 128
     gt_sizes: [128]
-    dataset_enlarge_ratio: 1
     prefetch_mode: ~
   val:
     name: ValSet
@@ -35,13 +35,20 @@ datasets:
       type: disk
 
 network_g:
-  type: ECAFormerBaseline
+  type: ECAFormerISB
   in_channels: 3
   out_channels: 3
   n_feat: 40
   level: 2
   num_blocks: [1, 2, 2]
-  stage: 1
+  nfe: 4
+  min_nfe_for_stability: 4
+  sigma_max: 0.10
+  use_checkpoint: true
+  use_sb: true
+  self_cond_prob: 0.0
+  cond_type: adaln
+  output_activation: sigmoid
 
 path:
   pretrain_network_g: ~
@@ -52,10 +59,22 @@ train:
   total_iter: 16667
   warmup_iter: -1
   use_grad_clip: true
-  grad_clip_value: 0.01
+  grad_clip_value: 0.03
   use_amp: true
-  # accumulate_steps: 不适用于 ImageCleanModel
+  accumulate_steps: 1
   ema_decay: 0.999
+  x0_loss_weight: 0.3
+  pixel_loss_weight: 0.7
+  tv_loss_weight: 0.003
+  strict_output_range: true
+  loss_on_clamped_output: true
+  nan_guard: true
+  output_range_log_interval: 200
+  train_psnr_window: 512
+  psnr_gap_warn: 2.0
+  early_stop_patience_val: 4
+  early_stop_min_delta: 0.01
+  max_nan_skips_per_epoch: 5
   scheduler:
     type: CosineAnnealingRestartLR
     periods: [16667]
@@ -66,9 +85,10 @@ train:
     mixup_beta: 1.2
     use_identity: true
   optim_g:
-    type: Adam
-    lr: !!float 2e-4
+    type: AdamW
+    lr: !!float 6e-5
     betas: [0.9, 0.999]
+    weight_decay: !!float 3e-4
   pixel_opt:
     type: L1Loss
     loss_weight: 1
@@ -99,7 +119,7 @@ val:
 
 logger:
   print_freq: 50
-  save_checkpoint_freq: !!float 5000
+  save_checkpoint_freq: !!float 1000
   use_tb_logger: true
   wandb:
     project: low_light_isb

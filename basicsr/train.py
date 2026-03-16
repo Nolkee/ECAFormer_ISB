@@ -160,8 +160,12 @@ def main():
     state_folder_path = 'experiments/{}/training_states/'.format(opt['name']) #状态路径
     import os
     try:
-        states = os.listdir(state_folder_path)
-    except:
+        all_files = os.listdir(state_folder_path)
+        states = [
+            x for x in all_files
+            if x.endswith('.state') and x[:-6].isdigit()
+        ]
+    except Exception:
         states = []
 
     resume_state = None
@@ -195,6 +199,17 @@ def main():
 
     # initialize loggers
     logger, tb_logger = init_loggers(opt)
+    if resume_state is None:
+        pretrain_path = opt['path'].get('pretrain_network_g', None)
+        if pretrain_path:
+            logger.info(
+                f'Warm-start mode: pretrain_network_g={pretrain_path}. '
+                'Training will start from epoch 0, iter 0 unless a valid resume_state exists.'
+            )
+        else:
+            logger.info('No valid training state found. Training will start from scratch (epoch 0, iter 0).')
+    else:
+        logger.info(f'Auto-resume state selected: {opt["path"]["resume_state"]}')
 
     # create train and validation dataloaders
     result = create_train_val_dataloader(opt, logger)
@@ -462,6 +477,12 @@ def main():
                 logger.info(
                     f'Epoch {epoch} non-finite skip stats: '
                     f'epoch_skips={epoch_skip}, total_skips={total_skip}'
+                )
+                epoch_reason = nan_stats.get('epoch_nan_skip_by_reason', {})
+                total_reason = nan_stats.get('total_nan_skip_by_reason', {})
+                logger.info(
+                    f'Epoch {epoch} non-finite skip breakdown: '
+                    f'epoch={epoch_reason}, total={total_reason}'
                 )
                 if epoch_skip > max_nan_skips_per_epoch:
                     logger.warning(

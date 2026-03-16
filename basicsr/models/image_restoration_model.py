@@ -99,12 +99,23 @@ class ImageCleanModel(BaseModel):
     def init_training_settings(self):
         self.net_g.train()
         train_opt = self.opt['train']
+        self.use_grad_clip = bool(train_opt.get('use_grad_clip', True))
+        self.grad_clip_value = float(train_opt.get('grad_clip_value', 0.01))
+        if self.grad_clip_value <= 0:
+            raise ValueError(
+                f"ImageCleanModel: grad_clip_value={self.grad_clip_value} is invalid. "
+                "Expected a value > 0."
+            )
 
         self.ema_decay = train_opt.get('ema_decay', 0)
         if self.ema_decay > 0:
             logger = get_root_logger()
             logger.info(
                 f'Use Exponential Moving Average with decay: {self.ema_decay}')
+            logger.info(
+                f'Gradient clipping: enabled={self.use_grad_clip}, '
+                f'clip_value={self.grad_clip_value}'
+            )
             # define network net_g with Exponential Moving Average (EMA)
             # net_g_ema is used only for testing on one GPU and saving
             # There is no need to wrap with DistributedDataParallel
@@ -191,8 +202,10 @@ class ImageCleanModel(BaseModel):
         self.amp_scaler.unscale_(self.optimizer_g) # 在梯度裁剪前先unscale梯度
         # l_pix.backward()
 
-        if self.opt['train']['use_grad_clip']:
-            torch.nn.utils.clip_grad_norm_(self.net_g.parameters(), 0.01)
+        if self.use_grad_clip:
+            torch.nn.utils.clip_grad_norm_(
+                self.net_g.parameters(), self.grad_clip_value
+            )
         # self.optimizer_g.step()
         self.amp_scaler.step(self.optimizer_g)
         self.amp_scaler.update()

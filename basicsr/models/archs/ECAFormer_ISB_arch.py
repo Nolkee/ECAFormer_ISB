@@ -315,7 +315,7 @@ class CrossAttenUnet_ISB(nn.Module):
     """ECAFormer's CrossAttenUnet adapted for I2SB with time conditioning."""
 
     def __init__(self, in_dim=3, out_dim=3, dim=31, level=2,
-                 num_blocks=None):
+                 num_blocks=None, output_activation='sigmoid'):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -376,7 +376,19 @@ class CrossAttenUnet_ISB(nn.Module):
         self.mapping = nn.Conv2d(self.dim * 2, out_dim, 3, 1, 1, bias=False)
         gn_groups = _best_group_count(self.dim * 2, max_groups=8)
         self.out_norm = nn.GroupNorm(gn_groups, self.dim * 2)
-        self.out_act = nn.Sigmoid()
+        act_mode = str(output_activation).lower()
+        if act_mode == 'sigmoid':
+            self.out_act = nn.Sigmoid()
+        elif act_mode == 'hardtanh':
+            self.out_act = nn.Hardtanh(min_val=0.0, max_val=1.0)
+        elif act_mode in ('identity', 'none'):
+            self.out_act = nn.Identity()
+        else:
+            raise ValueError(
+                f"CrossAttenUnet_ISB: output_activation='{output_activation}' is invalid. "
+                "Supported values: 'sigmoid', 'hardtanh', 'identity'."
+            )
+        self.output_activation = act_mode
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 
         self.apply(self._init_weights)
@@ -456,7 +468,8 @@ class ECAFormerISB(nn.Module):
     def __init__(self, in_channels=3, out_channels=3, n_feat=40,
                  level=2, num_blocks=None, nfe=8, sigma_max=0.5,
                  use_checkpoint=True, use_sb=True, self_cond_prob=0.0,
-                 cond_type="adaln", stage=1, min_nfe_for_stability=8):
+                 cond_type="adaln", stage=1, min_nfe_for_stability=8,
+                 output_activation='sigmoid'):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -474,10 +487,17 @@ class ECAFormerISB(nn.Module):
         self.use_sb = use_sb
         self.self_cond_prob = float(self_cond_prob)
         self.cond_type = str(cond_type).lower()
+        self.output_activation = str(output_activation).lower()
         if not 0.0 <= self.self_cond_prob <= 1.0:
             raise ValueError(
                 f"ECAFormerISB: self_cond_prob={self.self_cond_prob} is invalid. "
                 "Expected a value in [0, 1]."
+            )
+        if self.output_activation in ('identity', 'none'):
+            warnings.warn(
+                "ECAFormerISB: output_activation='identity' keeps output unconstrained. "
+                "Use strict_output_range/clamping in the training model to avoid range drift.",
+                stacklevel=2,
             )
 
         # Feature extractor (replaces Illumination_Estimator)
@@ -488,6 +508,7 @@ class ECAFormerISB(nn.Module):
                 self.denoiser = CrossAttenUnet_ISB(
                     in_dim=in_channels, out_dim=out_channels,
                     dim=n_feat, level=level, num_blocks=num_blocks,
+                    output_activation=output_activation,
                 )
             elif self.cond_type == "none":
                 # No time conditioning — plain CrossAttenUnet wrapped
