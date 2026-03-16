@@ -238,6 +238,33 @@ def main():
         raise ValueError(f'Wrong prefetch_mode {prefetch_mode}.'
                          "Supported ones are: None, 'cuda', 'cpu'.")
 
+    early_stop_patience = int(opt['train'].get('early_stop_patience_val', 0))
+    early_stop_min_delta = float(opt['train'].get('early_stop_min_delta', 0.0))
+    max_nan_skips_per_epoch = int(opt['train'].get('max_nan_skips_per_epoch', 5))
+    if early_stop_patience < 0:
+        raise ValueError(
+            f"early_stop_patience_val={early_stop_patience} is invalid. Expected >= 0."
+        )
+    if early_stop_min_delta < 0:
+        raise ValueError(
+            f"early_stop_min_delta={early_stop_min_delta} is invalid. Expected >= 0."
+        )
+    if max_nan_skips_per_epoch < 0:
+        raise ValueError(
+            f"max_nan_skips_per_epoch={max_nan_skips_per_epoch} is invalid. Expected >= 0."
+        )
+    no_improve_val_count = 0
+    early_stop_triggered = False
+
+    if early_stop_patience > 0:
+        logger.info(
+            'Early-stop enabled: '
+            f'patience={early_stop_patience}, min_delta={early_stop_min_delta:.6f}.'
+        )
+    logger.info(
+        f'NaN/Inf skip monitor threshold per epoch: {max_nan_skips_per_epoch}'
+    )
+
     # training
     logger.info(
         f'Start training from epoch: {start_epoch}, iter: {current_iter}')
@@ -374,17 +401,40 @@ def main():
                                 )
 
                 # log best metric (use PSNR as model selection metric)
-                if best_metric['psnr'] < current_psnr:
+                if current_psnr > (best_metric['psnr'] + early_stop_min_delta):
                     best_metric['psnr'] = current_psnr
                     # save best model
                     best_metric['iter'] = current_iter
+                    if metric_results:
+                        for metric_name in opt['val']['metrics'].keys():
+                            if metric_name in metric_results:
+                                best_metric[metric_name] = metric_results[metric_name]
                     model.save_best(best_metric)
+                    no_improve_val_count = 0
+                else:
+                    if early_stop_patience > 0:
+                        no_improve_val_count += 1
+                        logger.info(
+                            'Early-stop counter: '
+                            f'{no_improve_val_count}/{early_stop_patience} '
+                            f'(best_psnr={best_metric["psnr"]:.4f}, current_psnr={current_psnr:.4f}, '
+                            f'min_delta={early_stop_min_delta:.6f})'
+                        )
+                        if no_improve_val_count >= early_stop_patience:
+                            early_stop_triggered = True
+                            logger.warning(
+                                'Early stopping triggered: '
+                                f'no PSNR improvement greater than {early_stop_min_delta:.6f} '
+                                f'for {early_stop_patience} consecutive validations.'
+                            )
                 if tb_logger:
                     tb_logger.add_scalar(  # best iter
                         f'metrics/best_iter', best_metric['iter'], current_iter)
                     for k, v in opt['val']['metrics'].items():  # best_psnr
                         tb_logger.add_scalar(
                             f'metrics/best_{k}', best_metric[k], current_iter)
+                if early_stop_triggered:
+                    break
 
             data_time = time.time()
             iter_time = time.time()
@@ -400,6 +450,25 @@ def main():
                     f'clamped_min={out_stats["out_min"]:.4f}, '
                     f'clamped_max={out_stats["out_max"]:.4f}'
                 )
+        if hasattr(model, 'get_nan_skip_stats'):
+            nan_stats = model.get_nan_skip_stats(reset=True)
+            if nan_stats is not None:
+                epoch_skip = int(nan_stats.get('epoch_nan_skip', 0))
+                total_skip = int(nan_stats.get('total_nan_skip', 0))
+                logger.info(
+                    f'Epoch {epoch} non-finite skip stats: '
+                    f'epoch_skips={epoch_skip}, total_skips={total_skip}'
+                )
+                if epoch_skip > max_nan_skips_per_epoch:
+                    logger.warning(
+                        f'Epoch {epoch} non-finite skip count {epoch_skip} exceeded threshold '
+                        f'{max_nan_skips_per_epoch}. Consider lowering lr or disabling AMP for diagnosis.'
+                    )
+        if early_stop_triggered:
+            logger.info(
+                f'Stopping at epoch {epoch}, iter {current_iter} due to early-stop criterion.'
+            )
+            break
         epoch += 1
 
     # end of epoch

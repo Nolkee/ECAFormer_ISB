@@ -13,6 +13,7 @@ This folder operationalizes the final 3-step strategy:
 - `run_full_s12.sh`: launch full-length training for `full_s12`.
 - `run_full_s18.sh`: launch full-length training for `full_s18`.
 - `run_full_s19.sh`: launch full-length training for `full_s19`.
+- `run_s19_adamw_ablation.sh`: run 3 S19 AdamW ablations sequentially.
 - `compare_full_family.py`: summarize metrics/checkpoints and print ranking.
 
 ## Usage
@@ -25,10 +26,17 @@ bash tuning_rounds/final_decision/run_full_s18.sh single
 bash tuning_rounds/final_decision/run_full_s19.sh single
 python tuning_rounds/final_decision/compare_full_family.py
 
+# S19 AdamW ablation (single-variable controls):
+bash tuning_rounds/final_decision/run_s19_adamw_ablation.sh single
+
 # custom runs:
 python tuning_rounds/final_decision/compare_full_family.py \
   --runs ISB_ecaformer_full ISB_ecaformer_full_s8 ISB_ecaformer_full_s12 ISB_ecaformer_full_s18 ISB_ecaformer_full_s19 \
   --out-csv tuning_rounds/final_decision/full_family_compare_with_s18_s19.csv
+
+python tuning_rounds/final_decision/compare_full_family.py \
+  --runs ISB_ecaformer_full_s19_adamw_wd1e4 ISB_ecaformer_full_s19_adamw_wd3e4 ISB_ecaformer_full_s19_adamw_wd1e4_lr5e5 \
+  --out-csv tuning_rounds/final_decision/s19_adamw_ablation_compare.csv
 ```
 
 The comparison script writes:

@@ -78,6 +78,8 @@ class ImageISBModel(ImageCleanModel):
         self._epoch_out_min = float('inf')
         self._epoch_out_max = float('-inf')
         self._gt_range_warned = False
+        self._nan_skip_count_epoch = 0
+        self._nan_skip_count_total = 0
 
         logger = get_root_logger()
         logger.info(
@@ -136,6 +138,10 @@ class ImageISBModel(ImageCleanModel):
             psnr = -10.0 * math.log10(max(mse, 1e-12))
         self._train_psnr_values.append(psnr)
 
+    def _mark_nan_skip(self):
+        self._nan_skip_count_epoch += 1
+        self._nan_skip_count_total += 1
+
     def get_train_psnr_stats(self, reset=False):
         if not self._train_psnr_values:
             return None
@@ -149,6 +155,15 @@ class ImageISBModel(ImageCleanModel):
         }
         if reset:
             self._train_psnr_values.clear()
+        return stats
+
+    def get_nan_skip_stats(self, reset=False):
+        stats = {
+            'epoch_nan_skip': int(self._nan_skip_count_epoch),
+            'total_nan_skip': int(self._nan_skip_count_total)
+        }
+        if reset:
+            self._nan_skip_count_epoch = 0
         return stats
 
     def step_learning_rate(self, current_iter):
@@ -188,6 +203,7 @@ class ImageISBModel(ImageCleanModel):
                 logger.warning(
                     f'Non-finite fallback loss at iter {current_iter}, skipping optimizer step.'
                 )
+                self._mark_nan_skip()
                 self.optimizer_g.zero_grad(set_to_none=True)
                 self.amp_scaler.update()
                 self.log_dict = {'l_pix': 0.0}
@@ -202,6 +218,7 @@ class ImageISBModel(ImageCleanModel):
                 )
             if self._has_nonfinite_grad():
                 logger.warning(f'Non-finite gradients detected at iter {current_iter}, skipping optimizer step.')
+                self._mark_nan_skip()
                 self.optimizer_g.zero_grad(set_to_none=True)
                 self.amp_scaler.update()
                 self.log_dict = {'l_pix': loss.item()}
@@ -220,6 +237,7 @@ class ImageISBModel(ImageCleanModel):
         self.output = predicted_x0
         if self.nan_guard and self._has_nonfinite_tensor(raw_predicted_x0):
             logger.warning(f'Non-finite model output at iter {current_iter}, skipping optimizer step.')
+            self._mark_nan_skip()
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
             self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_total': 0.0}
@@ -263,6 +281,7 @@ class ImageISBModel(ImageCleanModel):
                 f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
                 f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}'
             )
+            self._mark_nan_skip()
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
             self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_total': 0.0}
@@ -287,6 +306,7 @@ class ImageISBModel(ImageCleanModel):
 
             if self._has_nonfinite_grad():
                 logger.warning(f'Non-finite gradients detected at iter {current_iter}, skipping optimizer step.')
+                self._mark_nan_skip()
                 self.optimizer_g.zero_grad(set_to_none=True)
                 self.amp_scaler.update()
             else:
