@@ -3,6 +3,7 @@ import argparse
 import csv
 import glob
 import os
+import re
 from typing import Dict, List, Tuple
 
 
@@ -23,9 +24,34 @@ def parse_metric_csv(path: str) -> List[Tuple[int, float, float, float]]:
     return rows
 
 
-def pick_best_ckpt(exp_dir: str) -> str:
+def _parse_iter_from_best_ckpt(path: str) -> int:
+    base = os.path.basename(path)
+    m = re.match(r"best_psnr_[\d.]+_(\d+)\.pth$", base)
+    if not m:
+        return -1
+    return int(m.group(1))
+
+
+def pick_best_ckpt(exp_dir: str, best_iter: int) -> str:
     cands = sorted(glob.glob(os.path.join(exp_dir, "best_psnr_*.pth")))
-    return cands[-1] if cands else ""
+    if not cands:
+        return ""
+
+    # Prefer exact iteration match from metric.csv (authoritative selection).
+    exact = [p for p in cands if _parse_iter_from_best_ckpt(p) == int(best_iter)]
+    if exact:
+        return sorted(exact)[-1]
+
+    # Fallback: nearest iteration if exact file is missing.
+    ranked = sorted(
+        cands,
+        key=lambda p: (
+            abs(_parse_iter_from_best_ckpt(p) - int(best_iter))
+            if _parse_iter_from_best_ckpt(p) >= 0 else 10**12,
+            -_parse_iter_from_best_ckpt(p),
+        ),
+    )
+    return ranked[0]
 
 
 def summarize(exp_root: str, run_name: str) -> Dict[str, object]:
@@ -68,7 +94,7 @@ def summarize(exp_root: str, run_name: str) -> Dict[str, object]:
             "last_psnr": last[1],
             "last_ssim": last[2],
             "last_lpips": last[3],
-            "recommended_ckpt": pick_best_ckpt(exp_dir),
+            "recommended_ckpt": pick_best_ckpt(exp_dir, best[0]),
         }
     )
     return row

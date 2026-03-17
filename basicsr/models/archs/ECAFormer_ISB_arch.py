@@ -469,7 +469,8 @@ class ECAFormerISB(nn.Module):
                  level=2, num_blocks=None, nfe=8, sigma_max=0.5,
                  use_checkpoint=True, use_sb=True, self_cond_prob=0.0,
                  cond_type="adaln", stage=1, min_nfe_for_stability=8,
-                 output_activation='sigmoid'):
+                 output_activation='sigmoid', train_output_clamp=True,
+                 inference_output_clamp=True, reverse_noise_scale=0.5):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -488,6 +489,8 @@ class ECAFormerISB(nn.Module):
         self.self_cond_prob = float(self_cond_prob)
         self.cond_type = str(cond_type).lower()
         self.output_activation = str(output_activation).lower()
+        self.train_output_clamp = bool(train_output_clamp)
+        self.inference_output_clamp = bool(inference_output_clamp)
         if not 0.0 <= self.self_cond_prob <= 1.0:
             raise ValueError(
                 f"ECAFormerISB: self_cond_prob={self.self_cond_prob} is invalid. "
@@ -530,7 +533,11 @@ class ECAFormerISB(nn.Module):
                     stacklevel=2,
                 )
             noise_schedule = NoiseSchedule(sigma_max=sigma_max)
-            self.isb_engine = ISBEngine(noise_schedule=noise_schedule, nfe=self.nfe)
+            self.isb_engine = ISBEngine(
+                noise_schedule=noise_schedule,
+                nfe=self.nfe,
+                reverse_noise_scale=reverse_noise_scale,
+            )
         else:
             # Original ECAFormer (no diffusion)
             self.denoiser = CrossAttenUnet(
@@ -583,7 +590,9 @@ class ECAFormerISB(nn.Module):
                 predicted_x0_sc = self.denoiser(x_t, x1, visual_fea, t).detach()
             x1_cond = 0.5 * x1 + 0.5 * predicted_x0_sc
 
-        predicted_x0 = self.denoiser(x_t, x1_cond, visual_fea, t).clamp(0.0, 1.0)
+        predicted_x0 = self.denoiser(x_t, x1_cond, visual_fea, t)
+        if self.train_output_clamp:
+            predicted_x0 = predicted_x0.clamp(0.0, 1.0)
         return predicted_x0, x0, illu_map
 
     def _inference_forward(self, x1, visual_fea):
@@ -592,14 +601,20 @@ class ECAFormerISB(nn.Module):
             # Single-step: directly predict x0 from x1 at t=1.0
             b = x1.shape[0]
             t_batch = torch.ones(b, device=x1.device, dtype=x1.dtype)
-            return self.denoiser(x1, x1, visual_fea, t_batch).clamp(0.0, 1.0)
+            pred = self.denoiser(x1, x1, visual_fea, t_batch)
+            if self.inference_output_clamp:
+                pred = pred.clamp(0.0, 1.0)
+            return pred
         else:
             # Multi-step: iterative refinement via ISBEngine
             def _denoise_fn(x_t, cond, t_batch):
                 return self.denoiser(x_t, cond, visual_fea, t_batch)
-            return self.isb_engine.reverse_sample_fast(
+            pred = self.isb_engine.reverse_sample_fast(
                 _denoise_fn, x1, x1, nfe=self.nfe, predict_x0=True
-            ).clamp(0.0, 1.0)
+            )
+            if self.inference_output_clamp:
+                pred = pred.clamp(0.0, 1.0)
+            return pred
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ This folder operationalizes the final 3-step strategy:
 - `run_full_s19.sh`: launch full-length training for `full_s19`.
 - `run_s19_adamw_ablation.sh`: run 3 S19 AdamW ablations sequentially.
 - `run_s19_round5_fixes.sh`: run 3 round5 stability/generalization fixes sequentially.
+- `run_s19_round6.sh`: run 3 round6 mechanism-recovery experiments sequentially.
 - `compare_full_family.py`: summarize metrics/checkpoints and print ranking.
 
 ## Usage
@@ -48,6 +49,17 @@ python tuning_rounds/final_decision/compare_full_family.py \
          ISB_ecaformer_full_s19_r5_b_identity_softloss \
          ISB_ecaformer_full_s19_r5_c_noamp \
   --out-csv tuning_rounds/final_decision/s19_round5_compare.csv
+
+# Round6 mechanism recovery:
+bash tuning_rounds/final_decision/run_s19_round6.sh single
+
+python tuning_rounds/final_decision/compare_full_family.py \
+  --runs ECAFormer_baseline_fair ISB_ecaformer_full_s19 \
+         ISB_ecaformer_full_s19_r5_b_identity_softloss \
+         ISB_ecaformer_full_s19_r6_a_identity_unclamp_det \
+         ISB_ecaformer_full_s19_r6_b_identity_unclamp_det_lowlr \
+         ISB_ecaformer_full_s19_r6_c_identity_unclamp_det_wd5e4 \
+  --out-csv tuning_rounds/final_decision/s19_round6_compare.csv
 ```
 
 The comparison script writes:

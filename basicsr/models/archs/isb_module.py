@@ -95,9 +95,15 @@ class ISBEngine:
             pragmatic choice for the P40 (no Tensor Cores, ~12 TFLOPS FP32).
     """
 
-    def __init__(self, noise_schedule, nfe=20):
+    def __init__(self, noise_schedule, nfe=20, reverse_noise_scale=0.5):
         self.noise_schedule = noise_schedule
         self.nfe = nfe
+        self.reverse_noise_scale = float(reverse_noise_scale)
+        if self.reverse_noise_scale < 0.0:
+            raise ValueError(
+                f"ISBEngine: reverse_noise_scale={self.reverse_noise_scale} is invalid. "
+                "Expected a value >= 0."
+            )
 
     def q_sample(self, x_0, x_1, t):
         """
@@ -275,8 +281,8 @@ class ISBEngine:
                     sigma_t = self.noise_schedule.sigma_t(
                         torch.tensor(t_next, device=device, dtype=dtype)
                     )
-                    if sigma_t > 1e-6:
-                        noise_scale = sigma_t * 0.5  # reduced noise
+                    if sigma_t > 1e-6 and self.reverse_noise_scale > 0.0:
+                        noise_scale = sigma_t * self.reverse_noise_scale
                         x_t = x_t + noise_scale * torch.randn_like(x_t)
 
                 x_t = x_t.clamp(0.0, 1.0)  # intermediate clamp
@@ -335,4 +341,3 @@ class SinusoidalTimeEmbedding(nn.Module):
             # Handle odd dimensions by zero-padding
             emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=1)
         return emb
-
