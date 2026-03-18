@@ -10,7 +10,8 @@ def calculate_psnr(img1,
                    img2,
                    crop_border,
                    input_order='HWC',
-                   test_y_channel=False):
+                   test_y_channel=False,
+                   data_range=None):
     """Calculate PSNR (Peak Signal-to-Noise Ratio).
 
     Ref: https://en.wikipedia.org/wiki/Peak_signal-to-noise_ratio
@@ -23,6 +24,9 @@ def calculate_psnr(img1,
         input_order (str): Whether the input order is 'HWC' or 'CHW'.
             Default: 'HWC'.
         test_y_channel (bool): Test on Y channel of YCbCr. Default: False.
+
+        data_range (float | None): Explicit value range for metrics.
+            If None, infer from image max (legacy behavior).
 
     Returns:
         float: psnr result.
@@ -59,7 +63,12 @@ def calculate_psnr(img1,
     mse = np.mean((img1 - img2)**2)
     if mse == 0:
         return float('inf')
-    max_value = 1. if img1.max() <= 1 else 255.
+    if data_range is None:
+        max_value = 1. if img1.max() <= 1 else 255.
+    else:
+        max_value = float(data_range)
+        if max_value <= 0:
+            raise ValueError(f'data_range must be > 0, but got {data_range}.')
     return 20. * np.log10(max_value / np.sqrt(mse))
 
 
@@ -181,7 +190,7 @@ def _ssim_3d(img1, img2, max_value):
                                        (sigma1_sq + sigma2_sq + C2))
     return float(ssim_map.mean())
 
-def _ssim_cly(img1, img2):
+def _ssim_cly(img1, img2, max_value=255.0):
     assert len(img1.shape) == 2 and len(img2.shape) == 2
     """Calculate SSIM (structural similarity) for one channel images.
 
@@ -195,8 +204,8 @@ def _ssim_cly(img1, img2):
         float: ssim result.
     """
 
-    C1 = (0.01 * 255)**2
-    C2 = (0.03 * 255)**2
+    C1 = (0.01 * max_value)**2
+    C2 = (0.03 * max_value)**2
     img1 = img1.astype(np.float64)
     img2 = img2.astype(np.float64)
 
@@ -226,7 +235,8 @@ def calculate_ssim(img1,
                    img2,
                    crop_border,
                    input_order='HWC',
-                   test_y_channel=False):
+                   test_y_channel=False,
+                   data_range=None):
     """Calculate SSIM (structural similarity).
 
     Ref:
@@ -246,6 +256,9 @@ def calculate_ssim(img1,
         input_order (str): Whether the input order is 'HWC' or 'CHW'.
             Default: 'HWC'.
         test_y_channel (bool): Test on Y channel of YCbCr. Default: False.
+
+        data_range (float | None): Explicit value range for metrics.
+            If None, infer from image max (legacy behavior).
 
     Returns:
         float: ssim result.
@@ -277,10 +290,17 @@ def calculate_ssim(img1,
         img1 = img1[crop_border:-crop_border, crop_border:-crop_border, ...]
         img2 = img2[crop_border:-crop_border, crop_border:-crop_border, ...]
 
+    if data_range is None:
+        max_value = 1 if img1.max() <= 1 else 255
+    else:
+        max_value = float(data_range)
+        if max_value <= 0:
+            raise ValueError(f'data_range must be > 0, but got {data_range}.')
+
     if test_y_channel:
         img1 = to_y_channel(img1)
         img2 = to_y_channel(img2)
-        return _ssim_cly(img1[..., 0], img2[..., 0])
+        return _ssim_cly(img1[..., 0], img2[..., 0], max_value=max_value)
 
 
     ssims = []
@@ -289,7 +309,6 @@ def calculate_ssim(img1,
     # skimage_before = skimage.metrics.structural_similarity(img1, img2, data_range=255., multichannel=True)
     # print('.._skimage',
     #       skimage.metrics.structural_similarity(img1, img2, data_range=255., multichannel=True))
-    max_value = 1 if img1.max() <= 1 else 255
     with torch.no_grad():
         final_ssim = _ssim_3d(img1, img2, max_value)
         ssims.append(final_ssim)

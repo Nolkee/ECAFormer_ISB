@@ -3,7 +3,7 @@ ImageISBModel: Training model for RetinexFormer + I2SB (v2)
 ============================================================
 
 Implements 8-point design requirements:
-- x0 prediction MSE as primary loss
+- x0 prediction loss as configurable primary term (MSE/L1/Charbonnier)
 - Pixel L1 with configurable weight (secondary)
 - TV loss on illumination map for smoothness
 - FP32 enforcement for P40
@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from collections import OrderedDict, deque
 
 from basicsr.models.image_restoration_model import ImageCleanModel
+from basicsr.models.losses import CharbonnierLoss
 from basicsr.utils import get_root_logger
 
 
@@ -31,12 +32,15 @@ class ImageISBModel(ImageCleanModel):
     Training model for RetinexFormer + I2SB.
 
     Loss design (requirement #5):
-    - Primary: MSE(predicted_x0, gt) — x0 reconstruction loss
+    - Primary: configurable x0 loss(predicted_x0, gt)
+      (MSE / L1 / Charbonnier)
     - Secondary: L1(predicted_x0, gt) * pixel_weight — pixel-level auxiliary
     - Regularization: TV(illu_map) — illumination smoothness
 
     Config keys:
-    - train.x0_loss_weight: MSE weight (default 1.0)
+    - train.x0_loss_weight: x0 primary loss weight (default 1.0)
+    - train.x0_loss_type: mse | l1 | charbonnier (default mse)
+    - train.x0_charbonnier_eps: epsilon for charbonnier (default 1e-3)
     - train.pixel_loss_weight: L1 weight (default 0.1)
     - train.tv_loss_weight: TV weight (default 0.01)
     """
@@ -50,6 +54,8 @@ class ImageISBModel(ImageCleanModel):
         self.x0_loss_weight = train_opt.get('x0_loss_weight', 1.0)
         self.pixel_loss_weight = train_opt.get('pixel_loss_weight', 0.1)
         self.tv_loss_weight = train_opt.get('tv_loss_weight', 0.01)
+        self.x0_loss_type = str(train_opt.get('x0_loss_type', 'mse')).lower()
+        self.x0_charbonnier_eps = float(train_opt.get('x0_charbonnier_eps', 1e-3))
         self.accumulate_steps = int(train_opt.get('accumulate_steps', 1))
         self.use_grad_clip = bool(train_opt.get('use_grad_clip', True))
         self.grad_clip_value = float(train_opt.get('grad_clip_value', 1.0))
@@ -72,6 +78,22 @@ class ImageISBModel(ImageCleanModel):
                 f"ImageISBModel: grad_clip_value={self.grad_clip_value} is invalid. "
                 "Expected a value > 0."
             )
+        if self.x0_loss_type not in ('mse', 'l1', 'charbonnier'):
+            raise ValueError(
+                f"ImageISBModel: x0_loss_type='{self.x0_loss_type}' is invalid. "
+                "Supported values: 'mse', 'l1', 'charbonnier'."
+            )
+        if self.x0_charbonnier_eps <= 0:
+            raise ValueError(
+                f"ImageISBModel: x0_charbonnier_eps={self.x0_charbonnier_eps} is invalid. "
+                "Expected a value > 0."
+            )
+
+        self._x0_charbonnier = None
+        if self.x0_loss_type == 'charbonnier':
+            self._x0_charbonnier = CharbonnierLoss(
+                eps=self.x0_charbonnier_eps
+            ).to(self.device)
 
         # Running diagnostics for stability and overfitting analysis.
         self._last_range_warn_iter = -10**9
@@ -95,12 +117,22 @@ class ImageISBModel(ImageCleanModel):
         logger.info(
             f"ImageISBModel v2: x0_w={self.x0_loss_weight}, "
             f"pixel_w={self.pixel_loss_weight}, tv_w={self.tv_loss_weight}, "
+            f"x0_loss_type={self.x0_loss_type}, "
+            f"x0_charbonnier_eps={self.x0_charbonnier_eps}, "
             f"accumulate_steps={self.accumulate_steps}, "
             f"grad_clip={self.use_grad_clip}, grad_clip_value={self.grad_clip_value}, "
             f"strict_output_range={self.strict_output_range}, "
             f"loss_on_clamped_output={self.loss_on_clamped_output}, "
             f"nan_guard={self.nan_guard}"
         )
+
+    def _compute_x0_loss(self, pred, gt):
+        if self.x0_loss_type == 'mse':
+            return F.mse_loss(pred, gt)
+        if self.x0_loss_type == 'l1':
+            return F.l1_loss(pred, gt)
+        # self.x0_loss_type == 'charbonnier'
+        return self._x0_charbonnier(pred, gt)
 
     @staticmethod
     def _new_nan_reason_counter():
@@ -319,8 +351,8 @@ class ImageISBModel(ImageCleanModel):
 
         loss_dict = OrderedDict()
 
-        # Primary: x0 prediction MSE
-        l_x0 = F.mse_loss(predicted_x0_for_loss, gt)
+        # Primary: x0 prediction loss (configurable)
+        l_x0 = self._compute_x0_loss(predicted_x0_for_loss, gt)
         loss_dict['l_x0'] = l_x0
 
         # Secondary: L1 pixel loss (configurable weight)
@@ -331,7 +363,7 @@ class ImageISBModel(ImageCleanModel):
         l_tv = tv_loss(illu_map)
         loss_dict['l_tv'] = l_tv
 
-        # Combined loss (requirement #5: pixel weight << x0 weight)
+        # Combined loss: weighted x0 + pixel + TV
         l_total = (
             self.x0_loss_weight * l_x0
             + self.pixel_loss_weight * l_pix

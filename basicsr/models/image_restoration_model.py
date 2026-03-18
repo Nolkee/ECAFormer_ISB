@@ -277,6 +277,12 @@ class ImageCleanModel(BaseModel):
             test = self.nonpad_test
 
         cnt = 0
+        raw_pred_min = float('inf')
+        raw_pred_max = float('-inf')
+        metric_pred_min = float('inf')
+        metric_pred_max = float('-inf')
+        metric_gt_min = float('inf')
+        metric_gt_max = float('-inf')
 
         for idx, val_data in enumerate(dataloader):
             img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
@@ -284,9 +290,22 @@ class ImageCleanModel(BaseModel):
             test()
 
             visuals = self.get_current_visuals()
-            sr_img = tensor2img([visuals['result']], rgb2bgr=rgb2bgr)
+            pred_raw = visuals['result']
+            pred_metric = torch.clamp(pred_raw, 0.0, 1.0)
+
+            raw_pred_min = min(raw_pred_min, float(pred_raw.min().item()))
+            raw_pred_max = max(raw_pred_max, float(pred_raw.max().item()))
+            metric_pred_min = min(metric_pred_min, float(pred_metric.min().item()))
+            metric_pred_max = max(metric_pred_max, float(pred_metric.max().item()))
+
+            sr_img = tensor2img([pred_metric], rgb2bgr=rgb2bgr)
+            gt_metric = None
+            gt_img = None
             if 'gt' in visuals:
-                gt_img = tensor2img([visuals['gt']], rgb2bgr=rgb2bgr)
+                gt_metric = torch.clamp(visuals['gt'], 0.0, 1.0)
+                metric_gt_min = min(metric_gt_min, float(gt_metric.min().item()))
+                metric_gt_max = max(metric_gt_max, float(gt_metric.max().item()))
+                gt_img = tensor2img([gt_metric], rgb2bgr=rgb2bgr)
                 del self.gt
 
             # tentative for out of GPU memory
@@ -315,26 +334,48 @@ class ImageCleanModel(BaseModel):
                         f'{img_name}_gt.png')
 
                 imwrite(sr_img, save_img_path)
-                imwrite(gt_img, save_gt_img_path)
+                if gt_img is not None:
+                    imwrite(gt_img, save_gt_img_path)
 
             if with_metrics:
+                if gt_metric is None:
+                    raise ValueError(
+                        'Validation metrics require ground truth, but `gt` is missing from visuals.'
+                    )
                 # calculate metrics
                 opt_metric = deepcopy(self.opt['val']['metrics'])
                 if use_image:
                     for name, opt_ in opt_metric.items():
                         metric_type = opt_.pop('type')
+                        if metric_type in ('calculate_psnr', 'calculate_ssim'):
+                            opt_.setdefault('data_range', 255.0)
                         metric_value = getattr(metric_module, metric_type)(sr_img, gt_img, **opt_)
                         self.metric_results[name] += metric_value
                         self.metric_distributions[name].append(float(metric_value))
                 else:
                     for name, opt_ in opt_metric.items():
                         metric_type = opt_.pop('type')
+                        if metric_type in ('calculate_psnr', 'calculate_ssim'):
+                            opt_.setdefault('data_range', 1.0)
                         metric_value = getattr(
-                            metric_module, metric_type)(visuals['result'], visuals['gt'], **opt_)
+                            metric_module, metric_type)(pred_metric, gt_metric, **opt_)
                         self.metric_results[name] += metric_value
                         self.metric_distributions[name].append(float(metric_value))
 
             cnt += 1
+
+        if cnt > 0:
+            self._val_audit_stats = {
+                'raw_pred_min': raw_pred_min,
+                'raw_pred_max': raw_pred_max,
+                'metric_pred_min': metric_pred_min,
+                'metric_pred_max': metric_pred_max,
+                'metric_gt_min': metric_gt_min,
+                'metric_gt_max': metric_gt_max,
+                'use_image': bool(use_image),
+            }
+        else:
+            self._val_audit_stats = None
 
         current_metric = 0.
         if with_metrics:
@@ -359,6 +400,15 @@ class ImageCleanModel(BaseModel):
                 )
             else:
                 log_str += f'\t # {metric}: {value:.4f}'
+        audit = getattr(self, '_val_audit_stats', None)
+        if audit is not None:
+            log_str += (
+                '\t # val_output_range: '
+                f'raw_min={audit["raw_pred_min"]:.4f}, raw_max={audit["raw_pred_max"]:.4f}, '
+                f'metric_min={audit["metric_pred_min"]:.4f}, metric_max={audit["metric_pred_max"]:.4f}, '
+                f'gt_min={audit["metric_gt_min"]:.4f}, gt_max={audit["metric_gt_max"]:.4f}, '
+                f'use_image={audit["use_image"]}'
+            )
         logger = get_root_logger()
         logger.info(log_str)
         if tb_logger:
