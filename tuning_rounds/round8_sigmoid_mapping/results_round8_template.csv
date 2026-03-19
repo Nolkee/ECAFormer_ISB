@@ -1,0 +1,6 @@
+run,status,best_iter,best_psnr,best_ssim,best_lpips,last_iter,last_psnr,last_ssim,last_lpips,recommended_ckpt,latest_ckpt
+ECAFormer_baseline_fair,,,,,,,,,,,
+ISB_ecaformer_full_s19_r6_c_identity_unclamp_det_wd5e4,,,,,,,,,,,
+ISB_ecaformer_full_s19_r8_a_sigmoid_base,,,,,,,,,,,
+ISB_ecaformer_full_s19_r8_b_sigmoid_charb,,,,,,,,,,,
+ISB_ecaformer_full_s19_r8_c_sigmoid_charb_sigma007_lowlr,,,,,,,,,,,
