@@ -44,6 +44,7 @@ wandb/
 # Datasets and large generated assets
 data/
 **/data/
+ECA_reference/
 
 # Keep code under basicsr/data tracked
 !basicsr/data/

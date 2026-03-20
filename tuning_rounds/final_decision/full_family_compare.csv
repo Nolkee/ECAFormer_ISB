@@ -1,4 +1,4 @@
 run,status,best_iter,best_psnr,best_ssim,best_lpips,last_iter,last_psnr,last_ssim,last_lpips,recommended_ckpt,latest_ckpt
-ISB_ecaformer_full,missing,,,,,,,,,,/Users/lucas/Projects/ECAFormer_ISB/experiments/ISB_ecaformer_full/models/net_g_latest.pth
-ISB_ecaformer_full_s8,missing,,,,,,,,,,/Users/lucas/Projects/ECAFormer_ISB/experiments/ISB_ecaformer_full_s8/models/net_g_latest.pth
-ISB_ecaformer_full_s12,missing,,,,,,,,,,/Users/lucas/Projects/ECAFormer_ISB/experiments/ISB_ecaformer_full_s12/models/net_g_latest.pth
+ISB_ecaformer_full_s19_r8_a_sigmoid_base,missing,,,,,,,,,,experiments/ISB_ecaformer_full_s19_r8_a_sigmoid_base/models/net_g_latest.pth
+ISB_ecaformer_full_s19_r8_b_sigmoid_charb,missing,,,,,,,,,,experiments/ISB_ecaformer_full_s19_r8_b_sigmoid_charb/models/net_g_latest.pth
+ISB_ecaformer_full_s19_r8_c_sigmoid_charb_sigma007_lowlr,missing,,,,,,,,,,experiments/ISB_ecaformer_full_s19_r8_c_sigmoid_charb_sigma007_lowlr/models/net_g_latest.pth
