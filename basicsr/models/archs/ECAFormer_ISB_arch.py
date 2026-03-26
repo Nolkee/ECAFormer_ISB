@@ -470,7 +470,9 @@ class ECAFormerISB(nn.Module):
                  use_checkpoint=True, use_sb=True, self_cond_prob=0.0,
                  cond_type="adaln", stage=1, min_nfe_for_stability=8,
                  output_activation='sigmoid', train_output_clamp=True,
-                 inference_output_clamp=True, reverse_noise_scale=0.5):
+                 inference_output_clamp=True, reverse_noise_scale=0.5,
+                 illumination_map_activation='sigmoid',
+                 pre_denoiser_x1_clamp=True):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -491,6 +493,8 @@ class ECAFormerISB(nn.Module):
         self.output_activation = str(output_activation).lower()
         self.train_output_clamp = bool(train_output_clamp)
         self.inference_output_clamp = bool(inference_output_clamp)
+        self.illumination_map_activation = str(illumination_map_activation).lower()
+        self.pre_denoiser_x1_clamp = bool(pre_denoiser_x1_clamp)
         if not 0.0 <= self.self_cond_prob <= 1.0:
             raise ValueError(
                 f"ECAFormerISB: self_cond_prob={self.self_cond_prob} is invalid. "
@@ -500,6 +504,23 @@ class ECAFormerISB(nn.Module):
             warnings.warn(
                 "ECAFormerISB: output_activation='identity' keeps output unconstrained. "
                 "Use strict_output_range/clamping in the training model to avoid range drift.",
+                stacklevel=2,
+            )
+        if self.illumination_map_activation not in ('sigmoid', 'identity', 'none'):
+            raise ValueError(
+                "ECAFormerISB: illumination_map_activation must be one of "
+                "'sigmoid', 'identity', or 'none'."
+            )
+        if self.illumination_map_activation in ('identity', 'none'):
+            warnings.warn(
+                "ECAFormerISB: illumination_map_activation='identity' leaves the illumination "
+                "map unconstrained before x1 construction.",
+                stacklevel=2,
+            )
+        if not self.pre_denoiser_x1_clamp:
+            warnings.warn(
+                "ECAFormerISB: pre_denoiser_x1_clamp=false allows x1 to leave [0, 1] before "
+                "the denoiser. This is intended only for illumination-path ablations.",
                 stacklevel=2,
             )
 
@@ -560,8 +581,11 @@ class ECAFormerISB(nn.Module):
     def forward(self, x_low, x_high=None):
         # ShallowDeepConv → visual features + illumination map
         visual_fea, illu_map = self.estimator(x_low)
-        illu_map = torch.sigmoid(illu_map)
-        x1 = torch.clamp(x_low * illu_map + x_low, 0.0, 1.0)
+        if self.illumination_map_activation == 'sigmoid':
+            illu_map = torch.sigmoid(illu_map)
+        x1 = x_low * illu_map + x_low
+        if self.pre_denoiser_x1_clamp:
+            x1 = torch.clamp(x1, 0.0, 1.0)
 
         if not self.use_sb:
             output = self.denoiser(x1, visual_fea)
