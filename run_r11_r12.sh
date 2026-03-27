@@ -3,6 +3,10 @@
 
 set -e
 
+# 激活conda环境
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate RetInexformer
+
 echo "=========================================="
 echo "开始连续训练实验"
 echo "=========================================="
