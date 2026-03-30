@@ -1,0 +1,137 @@
+name: ISB_ecaformer_full_s19_r16_grayillu_resgate
+model_type: ImageISBModel
+scale: 1
+num_gpu: 1
+manual_seed: 100
+
+# Round 16: 灰度 illumination + 去掉输出头 GroupNorm + 可学习残差门控
+# 目标: 在 r15 基础上降低 x1 锚点对最终颜色的绑架，让模型自行学习保留多少 x1
+
+datasets:
+  train:
+    name: TrainSet
+    type: Dataset_PairedImage
+    dataroot_gt: data/LOLv1/Train/target
+    dataroot_lq: data/LOLv1/Train/input
+    geometric_augs: true
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+    use_shuffle: true
+    num_worker_per_gpu: 8
+    dataset_enlarge_ratio: 1
+    batch_size_per_gpu: 24
+    mini_batch_sizes: [24]
+    iters: [16000]
+    gt_size: 128
+    gt_sizes: [128]
+    prefetch_mode: ~
+  val:
+    name: ValSet
+    type: Dataset_PairedImage
+    dataroot_gt: data/LOLv1/Test/target
+    dataroot_lq: data/LOLv1/Test/input
+    io_backend:
+      type: disk
+
+network_g:
+  type: ECAFormerISB
+  in_channels: 3
+  out_channels: 3
+  n_feat: 40
+  level: 2
+  num_blocks: [1, 2, 2]
+  nfe: 4
+  min_nfe_for_stability: 4
+  sigma_max: 0.10
+  use_checkpoint: true
+  use_sb: true
+  self_cond_prob: 0.0
+  cond_type: adaln
+  output_activation: identity
+  train_output_clamp: false
+  inference_output_clamp: true
+  reverse_noise_scale: 0.0
+  use_out_norm: false
+  illumination_channels: 1
+  residual_scale_init: 1.0
+  learnable_residual_scale: true
+
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+
+train:
+  total_iter: 16000
+  warmup_iter: 1000
+  use_grad_clip: true
+  grad_clip_value: 0.02
+  use_amp: true
+  accumulate_steps: 1
+  ema_decay: 0.999
+  x0_loss_weight: 0.55
+  pixel_loss_weight: 0.45
+  tv_loss_weight: 0.002
+  x0_loss_type: l1
+  strict_output_range: true
+  loss_on_clamped_output: false
+  nan_guard: true
+  output_range_log_interval: 100
+  train_psnr_window: 512
+  psnr_gap_warn: 2.0
+  early_stop_patience_val: 6
+  early_stop_min_delta: 0.005
+  max_nan_skips_per_epoch: 3
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [16000]
+    restart_weights: [1]
+    eta_min: !!float 1e-6
+  mixing_augs:
+    mixup: true
+    mixup_beta: 1.2
+    use_identity: true
+  optim_g:
+    type: AdamW
+    lr: !!float 1e-4
+    betas: [0.9, 0.999]
+    weight_decay: !!float 5e-4
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1
+    reduction: mean
+
+val:
+  window_size: 4
+  val_freq: !!float 500
+  save_img: true
+  rgb2bgr: true
+  use_image: false
+  max_minibatch: 8
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+    lpips:
+      type: calculate_lpips
+      crop_border: 0
+      test_y_channel: false
+      net: alex
+      use_gpu: true
+
+logger:
+  print_freq: 50
+  save_checkpoint_freq: !!float 500
+  use_tb_logger: true
+  wandb:
+    project: low_light_isb
+    resume_id: ~
+dist_params:
+  backend: nccl
+  port: 29500

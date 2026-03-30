@@ -315,7 +315,9 @@ class CrossAttenUnet_ISB(nn.Module):
     """ECAFormer's CrossAttenUnet adapted for I2SB with time conditioning."""
 
     def __init__(self, in_dim=3, out_dim=3, dim=31, level=2,
-                 num_blocks=None, output_activation='sigmoid'):
+                 num_blocks=None, output_activation='sigmoid',
+                 use_out_norm=True, residual_scale_init=1.0,
+                 learnable_residual_scale=False):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -372,10 +374,20 @@ class CrossAttenUnet_ISB(nn.Module):
             ]))
             dim_level //= 2
 
-        # Output: predict residual, add x1 for final x0 prediction
+        # Output: predict residual, add scaled x1 for final x0 prediction
         self.mapping = nn.Conv2d(self.dim * 2, out_dim, 3, 1, 1, bias=False)
-        gn_groups = _best_group_count(self.dim * 2, max_groups=8)
-        self.out_norm = nn.GroupNorm(gn_groups, self.dim * 2)
+        self.use_out_norm = bool(use_out_norm)
+        if self.use_out_norm:
+            gn_groups = _best_group_count(self.dim * 2, max_groups=8)
+            self.out_norm = nn.GroupNorm(gn_groups, self.dim * 2)
+        else:
+            self.out_norm = None
+        self.learnable_residual_scale = bool(learnable_residual_scale)
+        residual_scale = torch.tensor(float(residual_scale_init))
+        if self.learnable_residual_scale:
+            self.residual_scale = nn.Parameter(residual_scale)
+        else:
+            self.register_buffer('residual_scale', residual_scale)
         act_mode = str(output_activation).lower()
         if act_mode == 'sigmoid':
             self.out_act = nn.Sigmoid()
@@ -445,8 +457,10 @@ class CrossAttenUnet_ISB(nn.Module):
             x, y = dmsa_block(x, y, t_emb)
 
         features = torch.cat([x, y], dim=1)
-        features = self.out_norm(features)
-        out = self.mapping(features) + x1
+        if self.out_norm is not None:
+            features = self.out_norm(features)
+        residual = self.residual_scale.to(dtype=x1.dtype) * x1
+        out = self.mapping(features) + residual
         out = self.out_act(out)
         return out
 
@@ -472,7 +486,9 @@ class ECAFormerISB(nn.Module):
                  output_activation='sigmoid', train_output_clamp=True,
                  inference_output_clamp=True, reverse_noise_scale=0.5,
                  illumination_map_activation='sigmoid',
-                 pre_denoiser_x1_clamp=True):
+                 pre_denoiser_x1_clamp=True, illumination_channels=3,
+                 use_out_norm=True, residual_scale_init=1.0,
+                 learnable_residual_scale=False):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -495,10 +511,19 @@ class ECAFormerISB(nn.Module):
         self.inference_output_clamp = bool(inference_output_clamp)
         self.illumination_map_activation = str(illumination_map_activation).lower()
         self.pre_denoiser_x1_clamp = bool(pre_denoiser_x1_clamp)
+        self.illumination_channels = int(illumination_channels)
+        self.use_out_norm = bool(use_out_norm)
+        self.residual_scale_init = float(residual_scale_init)
+        self.learnable_residual_scale = bool(learnable_residual_scale)
         if not 0.0 <= self.self_cond_prob <= 1.0:
             raise ValueError(
                 f"ECAFormerISB: self_cond_prob={self.self_cond_prob} is invalid. "
                 "Expected a value in [0, 1]."
+            )
+        if self.illumination_channels not in (1, in_channels):
+            raise ValueError(
+                f"ECAFormerISB: illumination_channels={self.illumination_channels} is invalid. "
+                f"Expected 1 or {in_channels}."
             )
         if self.output_activation in ('identity', 'none'):
             warnings.warn(
@@ -525,7 +550,7 @@ class ECAFormerISB(nn.Module):
             )
 
         # Feature extractor (replaces Illumination_Estimator)
-        self.estimator = ShallowDeepConv(n_feat)
+        self.estimator = ShallowDeepConv(n_feat, n_fea_out=self.illumination_channels)
 
         if use_sb:
             if self.cond_type == "adaln":
@@ -533,6 +558,9 @@ class ECAFormerISB(nn.Module):
                     in_dim=in_channels, out_dim=out_channels,
                     dim=n_feat, level=level, num_blocks=num_blocks,
                     output_activation=output_activation,
+                    use_out_norm=use_out_norm,
+                    residual_scale_init=residual_scale_init,
+                    learnable_residual_scale=learnable_residual_scale,
                 )
             elif self.cond_type == "none":
                 # No time conditioning — plain CrossAttenUnet wrapped
