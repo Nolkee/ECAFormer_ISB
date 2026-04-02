@@ -3,6 +3,7 @@ import datetime
 import logging
 import math
 import os
+import pickle
 
 import random
 import time
@@ -149,6 +150,22 @@ def create_train_val_dataloader(opt, logger):  #train loader 和 val loader 一�
     return train_loader, train_sampler, val_loader, total_epochs, total_iters
 
 
+def _load_resume_state(resume_state_path, device_id):
+    map_location = lambda storage, loc: storage.cuda(device_id)
+    try:
+        return torch.load(
+            resume_state_path,
+            map_location=map_location,
+            weights_only=True)
+    except TypeError:
+        return torch.load(resume_state_path, map_location=map_location)
+    except (pickle.UnpicklingError, RuntimeError) as err:
+        err_msg = str(err)
+        if 'Weights only load failed' not in err_msg:
+            raise
+        return torch.load(resume_state_path, map_location=map_location, weights_only=False)
+
+
 def main():
     # parse options, set distributed setting, set ramdom seed
     opt = parse_options(is_train=True)
@@ -177,15 +194,7 @@ def main():
     # load resume states if necessary，resume_state是重新训练的时候接上的吗？
     if opt['path'].get('resume_state'):
         device_id = torch.cuda.current_device()
-        try:
-            resume_state = torch.load(
-                opt['path']['resume_state'],
-                map_location=lambda storage, loc: storage.cuda(device_id),
-                weights_only=True)
-        except TypeError:
-            resume_state = torch.load(
-                opt['path']['resume_state'],
-                map_location=lambda storage, loc: storage.cuda(device_id))
+        resume_state = _load_resume_state(opt['path']['resume_state'], device_id)
     else:
         resume_state = None
 
