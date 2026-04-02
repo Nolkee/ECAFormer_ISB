@@ -488,7 +488,8 @@ class ECAFormerISB(nn.Module):
                  illumination_map_activation='sigmoid',
                  pre_denoiser_x1_clamp=True, illumination_channels=3,
                  use_out_norm=True, residual_scale_init=1.0,
-                 learnable_residual_scale=False):
+                 learnable_residual_scale=False,
+                 decouple_x1_from_bridge=False):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -515,6 +516,7 @@ class ECAFormerISB(nn.Module):
         self.use_out_norm = bool(use_out_norm)
         self.residual_scale_init = float(residual_scale_init)
         self.learnable_residual_scale = bool(learnable_residual_scale)
+        self.decouple_x1_from_bridge = bool(decouple_x1_from_bridge)
         if not 0.0 <= self.self_cond_prob <= 1.0:
             raise ValueError(
                 f"ECAFormerISB: self_cond_prob={self.self_cond_prob} is invalid. "
@@ -606,6 +608,11 @@ class ECAFormerISB(nn.Module):
                 return self.unet(x_t, visual_fea)
         return _NoCond(plain)
 
+    def _get_bridge_base(self, x_low, x1):
+        if self.decouple_x1_from_bridge:
+            return x_low
+        return x1
+
     def forward(self, x_low, x_high=None):
         # ShallowDeepConv → visual features + illumination map
         visual_fea, illu_map = self.estimator(x_low)
@@ -614,6 +621,7 @@ class ECAFormerISB(nn.Module):
         x1 = x_low * illu_map + x_low
         if self.pre_denoiser_x1_clamp:
             x1 = torch.clamp(x1, 0.0, 1.0)
+        bridge_base = self._get_bridge_base(x_low, x1)
 
         if not self.use_sb:
             output = self.denoiser(x1, visual_fea)
@@ -622,20 +630,20 @@ class ECAFormerISB(nn.Module):
             return output
 
         if x_high is not None and self.training:
-            return self._train_forward(x1, x_high, visual_fea, illu_map)
+            return self._train_forward(bridge_base, x1, x_high, visual_fea, illu_map)
         else:
-            return self._inference_forward(x1, visual_fea)
+            return self._inference_forward(bridge_base, x1, visual_fea)
 
-    def _train_forward(self, x1, x_high, visual_fea, illu_map):
-        b = x1.shape[0]
-        device = x1.device
-        dtype = x1.dtype
+    def _train_forward(self, bridge_base, x1, x_high, visual_fea, illu_map):
+        b = bridge_base.shape[0]
+        device = bridge_base.device
+        dtype = bridge_base.dtype
         x0 = x_high
 
         t = torch.rand(b, device=device, dtype=dtype).clamp(0.01, 0.99)
-        x_t = self.isb_engine.q_sample(x0, x1, t)
+        x_t = self.isb_engine.q_sample(x0, bridge_base, t)
 
-        # Self-conditioning: blend a detached first-pass prediction into cond.
+        # Self-conditioning stays on the x1 residual shortcut path.
         x1_cond = x1
         if self.self_cond_prob > 0 and torch.rand(1, device=device).item() < self.self_cond_prob:
             with torch.no_grad():
@@ -647,22 +655,22 @@ class ECAFormerISB(nn.Module):
             predicted_x0 = predicted_x0.clamp(0.0, 1.0)
         return predicted_x0, x0, illu_map
 
-    def _inference_forward(self, x1, visual_fea):
+    def _inference_forward(self, bridge_base, x1, visual_fea):
         """Inference: single-step (nfe<=1) or multi-step (nfe>1) x0-prediction."""
         if self.nfe <= 1:
-            # Single-step: directly predict x0 from x1 at t=1.0
-            b = x1.shape[0]
-            t_batch = torch.ones(b, device=x1.device, dtype=x1.dtype)
-            pred = self.denoiser(x1, x1, visual_fea, t_batch)
+            # Single-step: directly predict x0 from the selected bridge base at t=1.0.
+            b = bridge_base.shape[0]
+            t_batch = torch.ones(b, device=bridge_base.device, dtype=bridge_base.dtype)
+            pred = self.denoiser(bridge_base, x1, visual_fea, t_batch)
             if self.inference_output_clamp:
                 pred = pred.clamp(0.0, 1.0)
             return pred
         else:
-            # Multi-step: iterative refinement via ISBEngine
+            # Multi-step: iterative refinement via ISBEngine.
             def _denoise_fn(x_t, cond, t_batch):
                 return self.denoiser(x_t, cond, visual_fea, t_batch)
             pred = self.isb_engine.reverse_sample_fast(
-                _denoise_fn, x1, x1, nfe=self.nfe, predict_x0=True
+                _denoise_fn, bridge_base, x1, nfe=self.nfe, predict_x0=True
             )
             if self.inference_output_clamp:
                 pred = pred.clamp(0.0, 1.0)
