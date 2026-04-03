@@ -159,10 +159,7 @@ def _load_resume_state(resume_state_path, device_id):
             weights_only=True)
     except TypeError:
         return torch.load(resume_state_path, map_location=map_location)
-    except (pickle.UnpicklingError, RuntimeError) as err:
-        err_msg = str(err)
-        if 'Weights only load failed' not in err_msg:
-            raise
+    except (pickle.UnpicklingError, RuntimeError):
         return torch.load(resume_state_path, map_location=map_location, weights_only=False)
 
 
