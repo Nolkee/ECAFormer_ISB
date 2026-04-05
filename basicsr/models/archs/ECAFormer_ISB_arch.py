@@ -376,10 +376,24 @@ class CrossAttenUnet_ISB(nn.Module):
 
         # Output: predict residual, add scaled x1 for final x0 prediction
         self.mapping = nn.Conv2d(self.dim * 2, out_dim, 3, 1, 1, bias=False)
-        self.use_out_norm = bool(use_out_norm)
-        if self.use_out_norm:
-            gn_groups = _best_group_count(self.dim * 2, max_groups=8)
-            self.out_norm = nn.GroupNorm(gn_groups, self.dim * 2)
+        # use_out_norm: True/'group' → GroupNorm, 'instance' → InstanceNorm,
+        #               'layer' → LayerNorm-style (GroupNorm with 1 group),
+        #               False/'none' → no normalization.
+        _norm_mode = str(use_out_norm).lower()
+        if _norm_mode in ('true', 'group'):
+            _norm_mode = 'group'
+        elif _norm_mode in ('false', 'none'):
+            _norm_mode = 'none'
+        self._out_norm_mode = _norm_mode
+        self.use_out_norm = _norm_mode != 'none'
+        num_features = self.dim * 2
+        if _norm_mode == 'group':
+            gn_groups = _best_group_count(num_features, max_groups=8)
+            self.out_norm = nn.GroupNorm(gn_groups, num_features)
+        elif _norm_mode == 'instance':
+            self.out_norm = nn.InstanceNorm2d(num_features, affine=True)
+        elif _norm_mode == 'layer':
+            self.out_norm = nn.GroupNorm(1, num_features)
         else:
             self.out_norm = None
         self.learnable_residual_scale = bool(learnable_residual_scale)
@@ -513,7 +527,7 @@ class ECAFormerISB(nn.Module):
         self.illumination_map_activation = str(illumination_map_activation).lower()
         self.pre_denoiser_x1_clamp = bool(pre_denoiser_x1_clamp)
         self.illumination_channels = int(illumination_channels)
-        self.use_out_norm = bool(use_out_norm)
+        self.use_out_norm = use_out_norm
         self.residual_scale_init = float(residual_scale_init)
         self.learnable_residual_scale = bool(learnable_residual_scale)
         self.decouple_x1_from_bridge = bool(decouple_x1_from_bridge)

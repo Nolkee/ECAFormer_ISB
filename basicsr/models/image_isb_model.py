@@ -54,6 +54,7 @@ class ImageISBModel(ImageCleanModel):
         self.x0_loss_weight = train_opt.get('x0_loss_weight', 1.0)
         self.pixel_loss_weight = train_opt.get('pixel_loss_weight', 0.1)
         self.tv_loss_weight = train_opt.get('tv_loss_weight', 0.01)
+        self.color_loss_weight = float(train_opt.get('color_loss_weight', 0.0))
         self.x0_loss_type = str(train_opt.get('x0_loss_type', 'mse')).lower()
         self.x0_charbonnier_eps = float(train_opt.get('x0_charbonnier_eps', 1e-3))
         self.accumulate_steps = int(train_opt.get('accumulate_steps', 1))
@@ -363,21 +364,30 @@ class ImageISBModel(ImageCleanModel):
         l_tv = tv_loss(illu_map)
         loss_dict['l_tv'] = l_tv
 
-        # Combined loss: weighted x0 + pixel + TV
+        # Color loss: penalize channel-mean difference to preserve saturation
+        l_color = torch.tensor(0.0, device=predicted_x0_for_loss.device)
+        if self.color_loss_weight > 0:
+            pred_mean = predicted_x0_for_loss.mean(dim=(2, 3))  # [b, c]
+            gt_mean = gt.mean(dim=(2, 3))  # [b, c]
+            l_color = F.l1_loss(pred_mean, gt_mean)
+        loss_dict['l_color'] = l_color
+
+        # Combined loss: weighted x0 + pixel + TV + color
         l_total = (
             self.x0_loss_weight * l_x0
             + self.pixel_loss_weight * l_pix
             + self.tv_loss_weight * l_tv
+            + self.color_loss_weight * l_color
         )
         if self.nan_guard and self._has_nonfinite_tensor(l_total):
             logger.warning(
                 f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
-                f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}'
+                f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}, l_color={l_color.item()}'
             )
             self._mark_nan_skip('loss_nonfinite')
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
-            self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_total': 0.0}
+            self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_color': 0.0, 'l_total': 0.0}
             return
 
         loss_dict['l_total'] = l_total
