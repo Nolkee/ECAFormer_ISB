@@ -376,8 +376,9 @@ class CrossAttenUnet_ISB(nn.Module):
 
         # Output: predict residual, add scaled x1 for final x0 prediction
         self.mapping = nn.Conv2d(self.dim * 2, out_dim, 3, 1, 1, bias=False)
-        # use_out_norm: True/'group' → GroupNorm, 'instance' → InstanceNorm,
-        #               'layer' → LayerNorm-style (GroupNorm with 1 group),
+        # use_out_norm: True/'group' → GroupNorm(8), 'group2' → GroupNorm(2),
+        #               'instance' → InstanceNorm, 'layer' → GroupNorm(1),
+        #               'post' → GroupNorm(1) on 3ch RGB after mapping,
         #               False/'none' → no normalization.
         _norm_mode = str(use_out_norm).lower()
         if _norm_mode in ('true', 'group'):
@@ -390,12 +391,21 @@ class CrossAttenUnet_ISB(nn.Module):
         if _norm_mode == 'group':
             gn_groups = _best_group_count(num_features, max_groups=8)
             self.out_norm = nn.GroupNorm(gn_groups, num_features)
+        elif _norm_mode == 'group2':
+            gn_groups = _best_group_count(num_features, max_groups=2)
+            self.out_norm = nn.GroupNorm(gn_groups, num_features)
         elif _norm_mode == 'instance':
             self.out_norm = nn.InstanceNorm2d(num_features, affine=True)
         elif _norm_mode == 'layer':
             self.out_norm = nn.GroupNorm(1, num_features)
+        elif _norm_mode == 'post':
+            # Norm applied after mapping on 3ch RGB, not on 80ch features
+            self.out_norm = None
+            self.post_norm = nn.GroupNorm(1, out_dim)
         else:
             self.out_norm = None
+        if _norm_mode != 'post':
+            self.post_norm = None
         self.learnable_residual_scale = bool(learnable_residual_scale)
         residual_scale = torch.tensor(float(residual_scale_init))
         if self.learnable_residual_scale:
@@ -475,6 +485,8 @@ class CrossAttenUnet_ISB(nn.Module):
             features = self.out_norm(features)
         residual = self.residual_scale.to(dtype=x1.dtype) * x1
         out = self.mapping(features) + residual
+        if self.post_norm is not None:
+            out = self.post_norm(out)
         out = self.out_act(out)
         return out
 
