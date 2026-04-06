@@ -317,7 +317,7 @@ class CrossAttenUnet_ISB(nn.Module):
     def __init__(self, in_dim=3, out_dim=3, dim=31, level=2,
                  num_blocks=None, output_activation='sigmoid',
                  use_out_norm=True, residual_scale_init=1.0,
-                 learnable_residual_scale=False):
+                 learnable_residual_scale=False, mapping_bias=False):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -375,7 +375,7 @@ class CrossAttenUnet_ISB(nn.Module):
             dim_level //= 2
 
         # Output: predict residual, add scaled x1 for final x0 prediction
-        self.mapping = nn.Conv2d(self.dim * 2, out_dim, 3, 1, 1, bias=False)
+        self.mapping = nn.Conv2d(self.dim * 2, out_dim, 3, 1, 1, bias=bool(mapping_bias))
         # use_out_norm: True/'group' → GroupNorm(8), 'group2' → GroupNorm(2),
         #               'instance' → InstanceNorm, 'layer' → GroupNorm(1),
         #               'post' → GroupNorm(1) on 3ch RGB after mapping,
@@ -515,7 +515,8 @@ class ECAFormerISB(nn.Module):
                  pre_denoiser_x1_clamp=True, illumination_channels=3,
                  use_out_norm=True, residual_scale_init=1.0,
                  learnable_residual_scale=False,
-                 decouple_x1_from_bridge=False):
+                 decouple_x1_from_bridge=False,
+                 mapping_bias=False):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -589,6 +590,7 @@ class ECAFormerISB(nn.Module):
                     use_out_norm=use_out_norm,
                     residual_scale_init=residual_scale_init,
                     learnable_residual_scale=learnable_residual_scale,
+                    mapping_bias=mapping_bias,
                 )
             elif self.cond_type == "none":
                 # No time conditioning — plain CrossAttenUnet wrapped
