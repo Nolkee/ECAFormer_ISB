@@ -122,6 +122,94 @@ class CharbonnierLoss(nn.Module):
         return self.loss_weight * loss
 
 
+_vgg_model_cache = {}
+
+
+class VGGFeatureExtractor(nn.Module):
+    """Extract features from specified VGG-19 layers for perceptual loss.
+
+    Default layers: relu1_1, relu2_1, relu3_1, relu4_1, relu5_1
+    (matching the ECAFormer paper recipe).
+    """
+
+    def __init__(self, layer_weights=None, use_input_norm=True):
+        super().__init__()
+        if layer_weights is None:
+            layer_weights = {
+                '2': 1.0,   # relu1_1
+                '7': 1.0,   # relu2_1
+                '14': 1.0,  # relu3_1
+                '21': 1.0,  # relu4_1
+                '28': 1.0,  # relu5_1
+            }
+        self.layer_weights = {int(k): float(v) for k, v in layer_weights.items()}
+        self.use_input_norm = use_input_norm
+
+        # Load pretrained VGG-19, keep only the layers we need
+        try:
+            from torchvision.models import vgg19, VGG19_Weights
+            vgg = vgg19(weights=VGG19_Weights.DEFAULT)
+        except ImportError:
+            from torchvision.models import vgg19
+            vgg = vgg19(pretrained=True)
+
+        max_layer = max(self.layer_weights.keys())
+        self.features = nn.Sequential(*list(vgg.features.children())[:max_layer + 1])
+
+        # Freeze all parameters
+        for param in self.features.parameters():
+            param.requires_grad_(False)
+
+        # ImageNet normalization constants
+        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer('std', torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def forward(self, x):
+        if self.use_input_norm:
+            x = (x - self.mean) / self.std
+
+        features = {}
+        for i, layer in enumerate(self.features):
+            x = layer(x)
+            if i in self.layer_weights:
+                features[i] = x
+        return features
+
+
+class VGGPerceptualLoss(nn.Module):
+    """VGG-19 perceptual loss (L1 on feature maps).
+
+    Matches the ECAFormer paper: relu1_1 through relu5_1 of VGG-19.
+    """
+
+    def __init__(self, loss_weight=1.0, layer_weights=None, use_input_norm=True):
+        super().__init__()
+        self.loss_weight = loss_weight
+        self.extractor = VGGFeatureExtractor(
+            layer_weights=layer_weights,
+            use_input_norm=use_input_norm,
+        )
+
+    def forward(self, pred, target):
+        if pred.dim() != 4 or target.dim() != 4:
+            raise ValueError(
+                'VGGPerceptualLoss expects NCHW tensors, '
+                f'got pred={tuple(pred.shape)}, target={tuple(target.shape)}'
+            )
+
+        pred = torch.clamp(pred, 0.0, 1.0)
+        target = torch.clamp(target, 0.0, 1.0)
+
+        pred_features = self.extractor(pred)
+        target_features = self.extractor(target)
+
+        loss = 0.0
+        for idx, weight in self.extractor.layer_weights.items():
+            loss += weight * F.l1_loss(pred_features[idx], target_features[idx])
+
+        return self.loss_weight * loss
+
+
 _lpips_module = None
 _lpips_models = {}
 
