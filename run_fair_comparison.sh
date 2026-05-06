@@ -17,7 +17,7 @@ for cfg in "${CONFIGS[@]}"; do
     echo "Config:   $cfg"
     echo "Start:    $(date '+%Y-%m-%d %H:%M:%S')"
     echo "=========================================="
-    python -m basicsr.train -opt "$cfg"
+    python -m basicsr.train --opt "$cfg"
     echo ""
     echo "Done: $name | End: $(date '+%Y-%m-%d %H:%M:%S')"
     echo ""
