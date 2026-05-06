@@ -113,8 +113,8 @@ class CharbonnierLoss(nn.Module):
 
     def __init__(self, loss_weight=1.0, reduction='mean', eps=1e-3):
         super(CharbonnierLoss, self).__init__()
-        self.loss_weight = loss_weight
-        self.eps = eps
+        self.loss_weight = float(loss_weight)
+        self.eps = float(eps)
 
     def forward(self, x, y):
         diff = x - y

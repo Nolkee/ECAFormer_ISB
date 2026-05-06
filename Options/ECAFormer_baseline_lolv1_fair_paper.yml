@@ -72,7 +72,7 @@ train:
     type: CharbonnierLoss
     loss_weight: 1.0
     reduction: mean
-    eps: 1e-3
+    eps: !!float 1e-3
   perceptual_opt:
     type: VGGPerceptualLoss
     loss_weight: 0.1
