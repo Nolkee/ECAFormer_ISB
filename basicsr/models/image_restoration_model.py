@@ -133,12 +133,19 @@ class ImageCleanModel(BaseModel):
 
         # define losses
         if train_opt.get('pixel_opt'):
-            pixel_type = train_opt['pixel_opt'].pop('type')
-            cri_pix_cls = getattr(loss_module, pixel_type)  #根据pop出来的loss_type找到对应的loss函数
-            self.cri_pix = cri_pix_cls(**train_opt['pixel_opt']).to(
-                self.device)      #如何写 weighted loss 呢？传参构造Loss函数
+            pixel_opt = deepcopy(train_opt['pixel_opt'])
+            pixel_type = pixel_opt.pop('type')
+            cri_pix_cls = getattr(loss_module, pixel_type)
+            self.cri_pix = cri_pix_cls(**pixel_opt).to(self.device)
         else:
             raise ValueError('pixel loss are None.')
+
+        self.cri_perceptual = None
+        if train_opt.get('perceptual_opt'):
+            perceptual_opt = deepcopy(train_opt['perceptual_opt'])
+            perceptual_type = perceptual_opt.pop('type')
+            cri_perceptual_cls = getattr(loss_module, perceptual_type)
+            self.cri_perceptual = cri_perceptual_cls(**perceptual_opt).to(self.device)
 
         # set up optimizers and schedulers
         self.setup_optimizers()
@@ -191,14 +198,20 @@ class ImageCleanModel(BaseModel):
             self.output = preds[-1]
 
             loss_dict = OrderedDict()
-            # pixel loss
             l_pix = 0.
+            l_percep = 0.
             for pred in preds:
-                l_pix += self.cri_pix(pred, self.gt) #此处统计batch的loss
+                l_pix += self.cri_pix(pred, self.gt)
+                if self.cri_perceptual is not None:
+                    l_percep += self.cri_perceptual(pred, self.gt)
 
+            l_total = l_pix + l_percep
             loss_dict['l_pix'] = l_pix
+            if self.cri_perceptual is not None:
+                loss_dict['l_percep'] = l_percep
+            loss_dict['l_total'] = l_total
 
-        self.amp_scaler.scale(l_pix).backward()
+        self.amp_scaler.scale(l_total).backward()
         self.amp_scaler.unscale_(self.optimizer_g) # 在梯度裁剪前先unscale梯度
         # l_pix.backward()
 

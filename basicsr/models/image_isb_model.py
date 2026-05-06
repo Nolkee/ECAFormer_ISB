@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from collections import OrderedDict, deque
 
 from basicsr.models.image_restoration_model import ImageCleanModel
+from basicsr.models import losses as loss_module
 from basicsr.models.losses import CharbonnierLoss
 from basicsr.utils import get_root_logger
 
@@ -95,6 +96,13 @@ class ImageISBModel(ImageCleanModel):
             self._x0_charbonnier = CharbonnierLoss(
                 eps=self.x0_charbonnier_eps
             ).to(self.device)
+
+        self.cri_perceptual = None
+        if train_opt.get('perceptual_opt'):
+            perceptual_opt = dict(train_opt['perceptual_opt'])
+            perceptual_type = perceptual_opt.pop('type')
+            cri_perceptual_cls = getattr(loss_module, perceptual_type)
+            self.cri_perceptual = cri_perceptual_cls(**perceptual_opt).to(self.device)
 
         # Running diagnostics for stability and overfitting analysis.
         self._last_range_warn_iter = -10**9
@@ -334,7 +342,14 @@ class ImageISBModel(ImageCleanModel):
             self._mark_nan_skip('output_nonfinite')
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
-            self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_total': 0.0}
+            self.log_dict = {
+                'l_x0': 0.0,
+                'l_pix': 0.0,
+                'l_tv': 0.0,
+                'l_percep': 0.0,
+                'l_color': 0.0,
+                'l_total': 0.0
+            }
             return
         raw_out_min, raw_out_max, out_min, out_max = self._update_epoch_output_range(
             raw_predicted_x0, predicted_x0_eval
@@ -364,6 +379,11 @@ class ImageISBModel(ImageCleanModel):
         l_tv = tv_loss(illu_map)
         loss_dict['l_tv'] = l_tv
 
+        l_percep = torch.tensor(0.0, device=predicted_x0_for_loss.device)
+        if self.cri_perceptual is not None:
+            l_percep = self.cri_perceptual(predicted_x0_for_loss, gt)
+        loss_dict['l_percep'] = l_percep
+
         # Color loss: penalize channel-mean difference to preserve saturation
         l_color = torch.tensor(0.0, device=predicted_x0_for_loss.device)
         if self.color_loss_weight > 0:
@@ -372,10 +392,11 @@ class ImageISBModel(ImageCleanModel):
             l_color = F.l1_loss(pred_mean, gt_mean)
         loss_dict['l_color'] = l_color
 
-        # Combined loss: weighted x0 + pixel + TV + color
+        # Combined loss: weighted x0 + pixel + perceptual + TV + color
         l_total = (
             self.x0_loss_weight * l_x0
             + self.pixel_loss_weight * l_pix
+            + l_percep
             + self.tv_loss_weight * l_tv
             + self.color_loss_weight * l_color
         )
@@ -387,7 +408,7 @@ class ImageISBModel(ImageCleanModel):
             self._mark_nan_skip('loss_nonfinite')
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
-            self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_color': 0.0, 'l_total': 0.0}
+            self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_percep': 0.0, 'l_color': 0.0, 'l_total': 0.0}
             return
 
         loss_dict['l_total'] = l_total

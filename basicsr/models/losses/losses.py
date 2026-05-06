@@ -113,13 +113,69 @@ class CharbonnierLoss(nn.Module):
 
     def __init__(self, loss_weight=1.0, reduction='mean', eps=1e-3):
         super(CharbonnierLoss, self).__init__()
+        self.loss_weight = loss_weight
         self.eps = eps
 
     def forward(self, x, y):
         diff = x - y
-        # loss = torch.sum(torch.sqrt(diff * diff + self.eps))
-        loss = torch.mean(torch.sqrt((diff * diff) + (self.eps*self.eps)))
-        return loss
+        loss = torch.mean(torch.sqrt((diff * diff) + (self.eps * self.eps)))
+        return self.loss_weight * loss
+
+
+_lpips_module = None
+_lpips_models = {}
+
+
+def _get_lpips_model(net='alex', device='cpu'):
+    global _lpips_module
+
+    if _lpips_module is None:
+        try:
+            import lpips as _imported_lpips
+        except ImportError as exc:
+            raise ImportError(
+                'lpips package is required for LPIPSPerceptualLoss. '
+                'Install it with: pip install lpips') from exc
+        _lpips_module = _imported_lpips
+
+    key = (net, device)
+    if key not in _lpips_models:
+        model = _lpips_module.LPIPS(net=net)
+        model = model.to(device)
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad_(False)
+        _lpips_models[key] = model
+    return _lpips_models[key]
+
+
+class LPIPSPerceptualLoss(nn.Module):
+    """LPIPS perceptual loss for image restoration training."""
+
+    def __init__(self, loss_weight=1.0, net='alex', use_gpu=True):
+        super(LPIPSPerceptualLoss, self).__init__()
+        self.loss_weight = loss_weight
+        self.net = net
+        self.use_gpu = use_gpu
+
+    def forward(self, pred, target):
+        if pred.dim() != 4 or target.dim() != 4:
+            raise ValueError(
+                'LPIPSPerceptualLoss expects NCHW tensors, '
+                f'got pred={tuple(pred.shape)}, target={tuple(target.shape)}'
+            )
+
+        device = pred.device
+        if not (self.use_gpu and pred.is_cuda):
+            device = torch.device('cpu')
+
+        model = _get_lpips_model(net=self.net, device=str(device))
+        pred = torch.clamp(pred, 0.0, 1.0).to(device)
+        target = torch.clamp(target, 0.0, 1.0).to(device)
+        pred = pred * 2.0 - 1.0
+        target = target * 2.0 - 1.0
+        loss = model(pred, target).mean()
+        return self.loss_weight * loss
 
 # def gradient(input_tensor, direction):
 #     smooth_kernel_x = torch.reshape(torch.tensor([[0, 0], [-1, 1]], dtype=torch.float32), [2, 2, 1, 1])
