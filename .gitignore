@@ -64,3 +64,4 @@ ECA_reference/
 
 # Jupyter
 .ipynb_checkpoints/
+key.pem

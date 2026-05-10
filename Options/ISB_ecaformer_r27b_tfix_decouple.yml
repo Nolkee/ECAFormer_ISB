@@ -1,10 +1,10 @@
-name: ISB_ecaformer_r27a_sigma0
+name: ISB_ecaformer_r27b_tfix_decouple
 model_type: ImageISBModel
 scale: 1
 num_gpu: 1
 manual_seed: 100
 
-# R27a: r26b architecture + sigma_max=0 (no bridge noise)
+# R27b: t-clamp fix + decouple_x1_from_bridge=true
 # Ablation run: 12K iters, batch=24, patch=128
 
 datasets:
@@ -43,7 +43,7 @@ network_g:
   num_blocks: [1, 2, 2]
   nfe: 4
   min_nfe_for_stability: 4
-  sigma_max: 0.0
+  sigma_max: 0.10
   use_checkpoint: true
   use_sb: true
   self_cond_prob: 0.0
@@ -55,6 +55,7 @@ network_g:
   use_out_norm: true
   mapping_bias: true
   pre_denoiser_x1_clamp: false
+  decouple_x1_from_bridge: true
 
 path:
   pretrain_network_g: ~

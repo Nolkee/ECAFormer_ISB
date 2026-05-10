@@ -668,7 +668,7 @@ class ECAFormerISB(nn.Module):
         dtype = bridge_base.dtype
         x0 = x_high
 
-        t = torch.rand(b, device=device, dtype=dtype).clamp(0.01, 0.99)
+        t = torch.rand(b, device=device, dtype=dtype).clamp(0.01, 1.0)
         x_t = self.isb_engine.q_sample(x0, bridge_base, t)
 
         # Self-conditioning stays on the x1 residual shortcut path.

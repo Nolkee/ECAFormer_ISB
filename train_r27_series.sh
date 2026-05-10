@@ -1,19 +1,20 @@
 #!/bin/bash
-# R27 Series Ablation: r26b architecture + sigma_max=0 variants
+# R27 Series Ablation: t-clamp fix + r26b variants
+# Bug fix: train t∈[0.01,1.0] instead of [0.01,0.99] to match inference t=1.0
 # Short run: 12K iters, batch=24, patch=128, Adam lr=6e-5
 #
-# r27a: sigma_max=0 (no bridge noise)
-# r27b: sigma_max=0 + decouple_x1_from_bridge
-# r27c: sigma_max=0 + nfe=1 (single-step)
+# r27a: t-clamp fix only
+# r27b: t-clamp fix + decouple_x1_from_bridge
+# r27c: t-clamp fix + nfe=1 (single-step)
 #
 # Compare against r26b at same 12K: PSNR=20.69, SSIM=0.761, LPIPS=0.244
 
 set -e
 
 CONFIGS=(
-    "Options/ISB_ecaformer_r27a_sigma0.yml"
-    "Options/ISB_ecaformer_r27b_sigma0_decouple.yml"
-    "Options/ISB_ecaformer_r27c_sigma0_nfe1.yml"
+    "Options/ISB_ecaformer_r27a_tfix.yml"
+    "Options/ISB_ecaformer_r27b_tfix_decouple.yml"
+    "Options/ISB_ecaformer_r27c_tfix_nfe1.yml"
 )
 
 for cfg in "${CONFIGS[@]}"; do
