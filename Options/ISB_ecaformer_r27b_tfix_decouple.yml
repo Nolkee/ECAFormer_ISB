@@ -106,7 +106,7 @@ train:
 
 val:
   window_size: 4
-  val_freq: !!float 2000
+  val_freq: !!float 500
   save_img: true
   rgb2bgr: true
   use_image: false
@@ -129,7 +129,7 @@ val:
 
 logger:
   print_freq: 50
-  save_checkpoint_freq: !!float 2000
+  save_checkpoint_freq: !!float 500
   use_tb_logger: true
   wandb:
     project: low_light_isb
