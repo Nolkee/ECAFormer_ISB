@@ -60,6 +60,43 @@ def _best_group_count(channels, max_groups=8):
     return 1
 
 
+def _eca_kernel_size(channels, gamma=2, beta=1):
+    """Compute adaptive ECA kernel size: k = |log2(C)/γ + b/γ|_odd."""
+    import math
+    k = abs(math.log2(channels) / gamma + beta / gamma)
+    k = int(k)
+    # Make odd: round to nearest odd number
+    if k % 2 == 0:
+        k = k + 1
+    return max(k, 3)  # minimum kernel size 3
+
+
+class ECA(nn.Module):
+    """Efficient Channel Attention with adaptive kernel size.
+
+    k = |log2(C)/γ + b/γ|_odd, defaults γ=2, b=1.
+    Uses 1D convolution over the channel dimension to capture
+    local cross-channel interaction without dimensionality reduction.
+    """
+    def __init__(self, channels, gamma=2, beta=1):
+        super().__init__()
+        k = _eca_kernel_size(channels, gamma, beta)
+        padding = k // 2
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv = nn.Conv1d(1, 1, kernel_size=k, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # x: [b, c, h, w]
+        b, c, _, _ = x.shape
+        y = self.avg_pool(x)  # [b, c, 1, 1]
+        y = y.squeeze(-1).squeeze(-1).unsqueeze(1)  # [b, 1, c]
+        y = self.conv(y)  # [b, 1, c]
+        y = self.sigmoid(y)
+        y = y.squeeze(1).unsqueeze(-1).unsqueeze(-1)  # [b, c, 1, 1]
+        return x * y.expand_as(x)
+
+
 # ---------------------------------------------------------------------------
 # Base modules (from ECAFormer)
 # ---------------------------------------------------------------------------
@@ -204,7 +241,7 @@ class DMSA(nn.Module):
 
 
 class FeedForward(nn.Module):
-    def __init__(self, dim, expand=4):
+    def __init__(self, dim, expand=4, use_eca=True, eca_gamma=2, eca_beta=1):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(dim, dim * expand, 1, 1, bias=False),
@@ -214,9 +251,12 @@ class FeedForward(nn.Module):
             GELU(),
             nn.Conv2d(dim * expand, dim, 1, 1, bias=False),
         )
+        self.eca = ECA(dim, gamma=eca_gamma, beta=eca_beta) if use_eca else None
 
     def forward(self, x):
         out = self.net(x.permute(0, 3, 1, 2))
+        if self.eca is not None:
+            out = self.eca(out)
         return out.permute(0, 2, 3, 1)
 
 
@@ -280,17 +320,18 @@ class DMSABlock(nn.Module):
 
 class DMSABlock_AdaLN(nn.Module):
     """ECAFormer block with AdaLayerNorm for ISB time conditioning.
-    
+
     AdaLN is applied to the x-stream (main feature) before FeedForward.
     The y-stream (auxiliary visual features) is NOT time-conditioned.
     """
-    def __init__(self, dim, time_dim, dim_head=64, heads=8, num_blocks=2):
+    def __init__(self, dim, time_dim, dim_head=64, heads=8, num_blocks=2,
+                 use_eca=True, eca_gamma=2, eca_beta=1):
         super().__init__()
         self.blocks = nn.ModuleList([])
         for _ in range(num_blocks):
             self.blocks.append(nn.ModuleList([
                 DMSA(dim=dim, dim_head=dim_head, heads=heads),
-                FeedForward(dim=dim),
+                FeedForward(dim=dim, use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta),
                 AdaLayerNorm(dim, time_dim),  # norm before FF on x-stream
             ]))
 
@@ -317,7 +358,8 @@ class CrossAttenUnet_ISB(nn.Module):
     def __init__(self, in_dim=3, out_dim=3, dim=31, level=2,
                  num_blocks=None, output_activation='sigmoid',
                  use_out_norm=True, residual_scale_init=1.0,
-                 learnable_residual_scale=False, mapping_bias=False):
+                 learnable_residual_scale=False, mapping_bias=False,
+                 use_eca=True, eca_gamma=2, eca_beta=1):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -345,7 +387,8 @@ class CrossAttenUnet_ISB(nn.Module):
                 DMSABlock_AdaLN(
                     dim=dim_level, time_dim=time_dim,
                     num_blocks=num_blocks[i], dim_head=dim,
-                    heads=dim_level // dim),
+                    heads=dim_level // dim,
+                    use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta),
                 nn.Conv2d(dim_level, dim_level * 2, 4, 2, 1, bias=False),
                 nn.Conv2d(dim_level, dim_level * 2, 4, 2, 1, bias=False),
             ]))
@@ -355,7 +398,8 @@ class CrossAttenUnet_ISB(nn.Module):
         self.bottleneck = DMSABlock_AdaLN(
             dim=dim_level, time_dim=time_dim,
             dim_head=dim, heads=dim_level // dim,
-            num_blocks=num_blocks[-1])
+            num_blocks=num_blocks[-1],
+            use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta)
 
         # Decoder
         self.decoder_layers = nn.ModuleList([])
@@ -370,7 +414,8 @@ class CrossAttenUnet_ISB(nn.Module):
                 DMSABlock_AdaLN(
                     dim=dim_level // 2, time_dim=time_dim,
                     num_blocks=num_blocks[level - 1 - i], dim_head=dim,
-                    heads=(dim_level // 2) // dim),
+                    heads=(dim_level // 2) // dim,
+                    use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta),
             ]))
             dim_level //= 2
 
@@ -516,7 +561,8 @@ class ECAFormerISB(nn.Module):
                  use_out_norm=True, residual_scale_init=1.0,
                  learnable_residual_scale=False,
                  decouple_x1_from_bridge=False,
-                 mapping_bias=False):
+                 mapping_bias=False,
+                 use_eca=True, eca_gamma=2, eca_beta=1):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -591,6 +637,7 @@ class ECAFormerISB(nn.Module):
                     residual_scale_init=residual_scale_init,
                     learnable_residual_scale=learnable_residual_scale,
                     mapping_bias=mapping_bias,
+                    use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
                 )
             elif self.cond_type == "none":
                 # No time conditioning — plain CrossAttenUnet wrapped

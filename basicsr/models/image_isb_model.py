@@ -52,6 +52,7 @@ class ImageISBModel(ImageCleanModel):
         super(ImageISBModel, self).__init__(opt)
 
         train_opt = opt.get('train', {})
+        self.bridge_weight = float(train_opt.get('bridge_weight', 1.0))
         self.x0_loss_weight = train_opt.get('x0_loss_weight', 1.0)
         self.pixel_loss_weight = train_opt.get('pixel_loss_weight', 0.1)
         self.tv_loss_weight = train_opt.get('tv_loss_weight', 0.01)
@@ -124,7 +125,7 @@ class ImageISBModel(ImageCleanModel):
 
         logger = get_root_logger()
         logger.info(
-            f"ImageISBModel v2: x0_w={self.x0_loss_weight}, "
+            f"ImageISBModel v2: bridge_w={self.bridge_weight}, x0_w={self.x0_loss_weight}, "
             f"pixel_w={self.pixel_loss_weight}, tv_w={self.tv_loss_weight}, "
             f"x0_loss_type={self.x0_loss_type}, "
             f"x0_charbonnier_eps={self.x0_charbonnier_eps}, "
@@ -385,14 +386,11 @@ class ImageISBModel(ImageCleanModel):
             l_color = F.l1_loss(pred_mean, gt_mean)
         loss_dict['l_color'] = l_color
 
-        # Combined loss: weighted x0 + pixel + perceptual + TV + color
-        l_total = (
+        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color
+        l_total = self.bridge_weight * (
             self.x0_loss_weight * l_x0
             + self.pixel_loss_weight * l_pix
-            + l_percep
-            + self.tv_loss_weight * l_tv
-            + self.color_loss_weight * l_color
-        )
+        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color
         if self.nan_guard and self._has_nonfinite_tensor(l_total):
             logger.warning(
                 f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
