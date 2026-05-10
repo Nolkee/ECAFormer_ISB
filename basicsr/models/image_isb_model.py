@@ -342,14 +342,7 @@ class ImageISBModel(ImageCleanModel):
             self._mark_nan_skip('output_nonfinite')
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
-            self.log_dict = {
-                'l_x0': 0.0,
-                'l_pix': 0.0,
-                'l_tv': 0.0,
-                'l_percep': 0.0,
-                'l_color': 0.0,
-                'l_total': 0.0
-            }
+            self.log_dict = {'l_total': 0.0}
             return
         raw_out_min, raw_out_max, out_min, out_max = self._update_epoch_output_range(
             raw_predicted_x0, predicted_x0_eval
@@ -408,7 +401,7 @@ class ImageISBModel(ImageCleanModel):
             self._mark_nan_skip('loss_nonfinite')
             self.optimizer_g.zero_grad(set_to_none=True)
             self.amp_scaler.update()
-            self.log_dict = {'l_x0': 0.0, 'l_pix': 0.0, 'l_tv': 0.0, 'l_percep': 0.0, 'l_color': 0.0, 'l_total': 0.0}
+            self.log_dict = {'l_total': 0.0}
             return
 
         loss_dict['l_total'] = l_total
@@ -439,7 +432,7 @@ class ImageISBModel(ImageCleanModel):
                 # Zero out gradients only after stepping
                 self.optimizer_g.zero_grad(set_to_none=True)
 
-        self.log_dict = self.reduce_loss_dict(loss_dict)
+        self.log_dict = {'l_total': l_total.item()}
 
         if self.ema_decay > 0:
             self.model_ema(decay=self.ema_decay)
