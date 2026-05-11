@@ -446,16 +446,30 @@ class ImageCleanModel(BaseModel):
             self.save_network(self.net_g, 'net_g', current_iter)
         self.save_training_state(epoch, current_iter, **kwargs)
 
-    def save_best(self, best_metric, param_key='params'):
-        psnr = best_metric['psnr']
-        cur_iter = best_metric['iter']
-        save_filename = f'best_psnr_{psnr:.2f}_{cur_iter}.pth'
+    def save_best(self, best_metric, param_key='params', metric_key='psnr'):
+        if metric_key == 'psnr':
+            val = best_metric['psnr']
+            cur_iter = best_metric['iter']
+            save_filename = f'best_psnr_{val:.2f}_{cur_iter}.pth'
+        elif metric_key == 'ssim':
+            val = best_metric.get('best_ssim', best_metric.get('ssim', 0))
+            cur_iter = best_metric['iter']
+            save_filename = f'best_ssim_{val:.4f}_{cur_iter}.pth'
+        elif metric_key == 'lpips':
+            val = best_metric.get('best_lpips', best_metric.get('lpips', 0))
+            cur_iter = best_metric['iter']
+            save_filename = f'best_lpips_{val:.4f}_{cur_iter}.pth'
+        else:
+            val = best_metric.get(metric_key, 0)
+            cur_iter = best_metric['iter']
+            save_filename = f'best_{metric_key}_{val:.4f}_{cur_iter}.pth'
+
         exp_root = self.opt['path']['experiments_root']
         save_path = os.path.join(
             self.opt['path']['experiments_root'], save_filename)
 
         if not os.path.exists(save_path):
-            for r_file in glob.glob(f'{exp_root}/best_*'):
+            for r_file in glob.glob(f'{exp_root}/best_{metric_key}_*'):
                 os.remove(r_file)
             net = self.net_g
 

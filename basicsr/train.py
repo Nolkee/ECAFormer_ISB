@@ -241,7 +241,8 @@ def main():
         best_metric = {'iter': 0}
         for k, v in opt['val']['metrics'].items():
             best_metric[k] = 0
-        # stx()
+        best_metric['best_ssim'] = 0
+        best_metric['best_lpips'] = float('inf')
 
     # create message logger (formatted outputs)
     msg_logger = MessageLogger(opt, current_iter, tb_logger)
@@ -375,9 +376,12 @@ def main():
                 logger.info('Saving models and training states.')
                 model.save(epoch, current_iter, best_metric=best_metric)
 
-            # validation
-            if opt.get('val') is not None and (current_iter %
-                                               opt['val']['val_freq'] == 0):
+            # validation (dynamic freq: every N iters before threshold, every M after)
+            val_freq = opt['val']['val_freq']
+            val_freq_after = opt['val'].get('val_freq_after', val_freq)
+            val_freq_threshold = opt['val'].get('val_freq_threshold', 0)
+            effective_val_freq = val_freq_after if (val_freq_threshold > 0 and current_iter >= val_freq_threshold) else val_freq
+            if opt.get('val') is not None and (current_iter % effective_val_freq == 0):
                 rgb2bgr = opt['val'].get('rgb2bgr', True)
                 # wheather use uint8 image to compute metrics
                 use_image = opt['val'].get('use_image', True)
@@ -424,7 +428,6 @@ def main():
                 # log best metric (use PSNR as model selection metric)
                 if current_psnr > (best_metric['psnr'] + early_stop_min_delta):
                     best_metric['psnr'] = current_psnr
-                    # save best model
                     best_metric['iter'] = current_iter
                     if metric_results:
                         for metric_name in opt['val']['metrics'].keys():
@@ -448,6 +451,25 @@ def main():
                                 f'no PSNR improvement greater than {early_stop_min_delta:.6f} '
                                 f'for {early_stop_patience} consecutive validations.'
                             )
+
+                # Save best SSIM and best LPIPS separately
+                if metric_results:
+                    current_ssim = metric_results.get('ssim', 0)
+                    current_lpips = metric_results.get('lpips', float('inf'))
+                    best_ssim_key = 'best_ssim'
+                    best_lpips_key = 'best_lpips'
+                    if best_ssim_key not in best_metric:
+                        best_metric[best_ssim_key] = 0
+                    if best_lpips_key not in best_metric:
+                        best_metric[best_lpips_key] = float('inf')
+                    if current_ssim > best_metric[best_ssim_key]:
+                        best_metric[best_ssim_key] = current_ssim
+                        model.save_best(best_metric, metric_key='ssim')
+                        logger.info(f'New best SSIM: {current_ssim:.4f} at iter {current_iter}')
+                    if current_lpips < best_metric[best_lpips_key]:
+                        best_metric[best_lpips_key] = current_lpips
+                        model.save_best(best_metric, metric_key='lpips')
+                        logger.info(f'New best LPIPS: {current_lpips:.4f} at iter {current_iter}')
                 if tb_logger:
                     tb_logger.add_scalar(  # best iter
                         f'metrics/best_iter', best_metric['iter'], current_iter)

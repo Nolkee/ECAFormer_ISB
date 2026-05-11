@@ -50,6 +50,8 @@ class ImageISBModel(ImageCleanModel):
         # Allow AMP if specified in train config
         opt['use_amp'] = opt.get('train', {}).get('use_amp', False)
         super(ImageISBModel, self).__init__(opt)
+        # Decoupled inference steps (can differ from training nfe)
+        self.inference_steps = int(opt['val'].get('inference_steps', 0))
 
         train_opt = opt.get('train', {})
         self.bridge_weight = float(train_opt.get('bridge_weight', 1.0))
@@ -436,9 +438,20 @@ class ImageISBModel(ImageCleanModel):
             self.model_ema(decay=self.ema_decay)
 
     def nonpad_test(self, img=None):
-        """Inference: network returns enhanced image directly in eval mode."""
+        """Inference: network returns enhanced image directly in eval mode.
+
+        Supports decoupled inference_steps: if val.inference_steps is set,
+        temporarily override the model's nfe for validation.
+        """
         if img is None:
             img = self.lq
+
+        # Temporarily override nfe if inference_steps is configured
+        orig_nfe = None
+        if self.inference_steps > 0:
+            net = self.get_bare_model(self.net_g_ema if hasattr(self, 'net_g_ema') else self.net_g)
+            orig_nfe = net.nfe
+            net.nfe = self.inference_steps
 
         if hasattr(self, 'net_g_ema'):
             self.net_g_ema.eval()
@@ -455,6 +468,11 @@ class ImageISBModel(ImageCleanModel):
                 pred = pred[0]
             self.output = pred
             self.net_g.train()
+
+        # Restore original nfe
+        if orig_nfe is not None:
+            net = self.get_bare_model(self.net_g_ema if hasattr(self, 'net_g_ema') else self.net_g)
+            net.nfe = orig_nfe
 
     def feed_train_data(self, data):
         logger = get_root_logger()
