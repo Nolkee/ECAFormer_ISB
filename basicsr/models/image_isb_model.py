@@ -107,6 +107,14 @@ class ImageISBModel(ImageCleanModel):
             cri_perceptual_cls = getattr(loss_module, perceptual_type)
             self.cri_perceptual = cri_perceptual_cls(**perceptual_opt).to(self.device)
 
+        self.cri_fft = None
+        self.fft_loss_weight = float(train_opt.get('fft_loss_weight', 0.0))
+        if self.fft_loss_weight > 0 and train_opt.get('fft_opt'):
+            fft_opt = dict(train_opt['fft_opt'])
+            fft_type = fft_opt.pop('type')
+            cri_fft_cls = getattr(loss_module, fft_type)
+            self.cri_fft = cri_fft_cls(**fft_opt).to(self.device)
+
         # Running diagnostics for stability and overfitting analysis.
         self._last_range_warn_iter = -10**9
         self._train_psnr_values = deque(maxlen=max(self.train_psnr_window, 1))
@@ -388,11 +396,17 @@ class ImageISBModel(ImageCleanModel):
             l_color = F.l1_loss(pred_mean, gt_mean)
         loss_dict['l_color'] = l_color
 
-        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color
+        # FFT loss: frequency domain constraint
+        l_fft = torch.tensor(0.0, device=predicted_x0_for_loss.device)
+        if self.cri_fft is not None:
+            l_fft = self.cri_fft(predicted_x0_for_loss, gt)
+        loss_dict['l_fft'] = l_fft
+
+        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color + FFT
         l_total = self.bridge_weight * (
             self.x0_loss_weight * l_x0
             + self.pixel_loss_weight * l_pix
-        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color
+        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color + self.fft_loss_weight * l_fft
         if self.nan_guard and self._has_nonfinite_tensor(l_total):
             logger.warning(
                 f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
