@@ -122,6 +122,43 @@ class CharbonnierLoss(nn.Module):
         return self.loss_weight * loss
 
 
+class FFTLoss(nn.Module):
+    """Frequency domain loss using FFT.
+
+    Computes L1 loss on both magnitude and phase components
+    of the 2D FFT of predicted and target images.
+
+    Args:
+        loss_weight: Weight for this loss term.
+        use_magnitude: Whether to compute loss on magnitude. Default: True.
+        use_phase: Whether to compute loss on phase. Default: True.
+    """
+
+    def __init__(self, loss_weight=1.0, use_magnitude=True, use_phase=True):
+        super(FFTLoss, self).__init__()
+        self.loss_weight = loss_weight
+        self.use_magnitude = use_magnitude
+        self.use_phase = use_phase
+
+    def forward(self, pred, target):
+        # pred, target: [b, c, h, w]
+        pred_fft = torch.fft.rfft2(pred, norm='ortho')
+        target_fft = torch.fft.rfft2(target, norm='ortho')
+
+        loss = 0.0
+        if self.use_magnitude:
+            pred_mag = torch.abs(pred_fft)
+            target_mag = torch.abs(target_fft)
+            loss += F.l1_loss(pred_mag, target_mag)
+
+        if self.use_phase:
+            pred_phase = torch.angle(pred_fft)
+            target_phase = torch.angle(target_fft)
+            loss += F.l1_loss(pred_phase, target_phase)
+
+        return self.loss_weight * loss
+
+
 _vgg_model_cache = {}
 
 
