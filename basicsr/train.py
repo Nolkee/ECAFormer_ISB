@@ -502,21 +502,22 @@ def main():
             if nan_stats is not None:
                 epoch_skip = int(nan_stats.get('epoch_nan_skip', 0))
                 total_skip = int(nan_stats.get('total_nan_skip', 0))
-                logger.info(
-                    f'Epoch {epoch} non-finite skip stats: '
-                    f'epoch_skips={epoch_skip}, total_skips={total_skip}'
-                )
-                epoch_reason = nan_stats.get('epoch_nan_skip_by_reason', {})
-                total_reason = nan_stats.get('total_nan_skip_by_reason', {})
-                logger.info(
-                    f'Epoch {epoch} non-finite skip breakdown: '
-                    f'epoch={epoch_reason}, total={total_reason}'
-                )
-                if epoch_skip > max_nan_skips_per_epoch:
-                    logger.warning(
-                        f'Epoch {epoch} non-finite skip count {epoch_skip} exceeded threshold '
-                        f'{max_nan_skips_per_epoch}. Consider lowering lr or disabling AMP for diagnosis.'
+                if epoch_skip > 0:
+                    logger.info(
+                        f'Epoch {epoch} non-finite skip stats: '
+                        f'epoch_skips={epoch_skip}, total_skips={total_skip}'
                     )
+                    epoch_reason = nan_stats.get('epoch_nan_skip_by_reason', {})
+                    total_reason = nan_stats.get('total_nan_skip_by_reason', {})
+                    logger.info(
+                        f'Epoch {epoch} non-finite skip breakdown: '
+                        f'epoch={epoch_reason}, total={total_reason}'
+                    )
+                    if epoch_skip > max_nan_skips_per_epoch:
+                        logger.warning(
+                            f'Epoch {epoch} non-finite skip count {epoch_skip} exceeded threshold '
+                            f'{max_nan_skips_per_epoch}. Consider lowering lr or disabling AMP for diagnosis.'
+                        )
         if early_stop_triggered:
             logger.info(
                 f'Stopping at epoch {epoch}, iter {current_iter} due to early-stop criterion.'
