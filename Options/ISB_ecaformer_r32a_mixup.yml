@@ -5,8 +5,8 @@ num_gpu: 1
 manual_seed: 100
 
 # R32a: R31a + mixup (anti-overfitting)
-# R31a base: eca_gamma=1.5, lr=6e-5, color_loss=0.1, PSNR=23.62@250K
-# Change: mixing_augs.mixup=true, loss_on_clamped_output=true
+# R31a base: eca_gamma=1.5, lr=6e-5, color_loss=0.1
+# Change: mixup=true, train_output_clamp=true, loss_on_clamped_output=true
 
 datasets:
   train:
@@ -50,7 +50,7 @@ network_g:
   self_cond_prob: 0.0
   cond_type: adaln
   output_activation: identity
-  train_output_clamp: false
+  train_output_clamp: true
   inference_output_clamp: true
   reverse_noise_scale: 0.0
   use_out_norm: true
