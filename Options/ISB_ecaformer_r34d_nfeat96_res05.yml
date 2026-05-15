@@ -1,12 +1,11 @@
-name: ISB_ecaformer_r32c_gt192
+name: ISB_ecaformer_r34d_nfeat96_res05
 model_type: ImageISBModel
 scale: 1
 num_gpu: 1
 manual_seed: 100
 
-# R32c: R31a + gt_size=192 + dataset_enlarge_ratio=2 (anti-overfitting)
-# R31a base: eca_gamma=1.5, lr=6e-5, color_loss=0.1
-# Change: gt_size 128->192, enlarge_ratio 1->2, batch_size 24->12 (OOM fix)
+# R34d: R33 base + n_feat=96 + residual_scale_init=0.5
+# Combined: larger model + reduced residual shortcut
 
 datasets:
   train:
@@ -20,12 +19,12 @@ datasets:
       type: disk
     use_shuffle: true
     num_worker_per_gpu: 8
-    dataset_enlarge_ratio: 2
-    batch_size_per_gpu: 12
-    mini_batch_sizes: [12]
+    dataset_enlarge_ratio: 1
+    batch_size_per_gpu: 24
+    mini_batch_sizes: [24]
     iters: [24000]
-    gt_size: 192
-    gt_sizes: [192]
+    gt_size: 128
+    gt_sizes: [128]
     prefetch_mode: ~
   val:
     name: ValSet
@@ -39,7 +38,7 @@ network_g:
   type: ECAFormerISB
   in_channels: 3
   out_channels: 3
-  n_feat: 64
+  n_feat: 96
   level: 2
   num_blocks: [1, 2, 2]
   nfe: 8
@@ -56,6 +55,7 @@ network_g:
   use_out_norm: true
   mapping_bias: true
   pre_denoiser_x1_clamp: false
+  residual_scale_init: 0.5
   use_eca: true
   eca_gamma: 1.5
   eca_beta: 1
@@ -93,7 +93,7 @@ train:
     restart_weights: [1]
     eta_min: !!float 1e-6
   mixing_augs:
-    mixup: false
+    mixup: true
     mixup_beta: 1.2
     use_identity: true
   optim_g:
