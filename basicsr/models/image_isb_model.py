@@ -59,6 +59,7 @@ class ImageISBModel(ImageCleanModel):
         self.pixel_loss_weight = train_opt.get('pixel_loss_weight', 0.1)
         self.tv_loss_weight = train_opt.get('tv_loss_weight', 0.01)
         self.color_loss_weight = float(train_opt.get('color_loss_weight', 0.0))
+        self.chroma_loss_weight = float(train_opt.get('chroma_loss_weight', 0.0))
         self.x0_loss_type = str(train_opt.get('x0_loss_type', 'mse')).lower()
         self.x0_charbonnier_eps = float(train_opt.get('x0_charbonnier_eps', 1e-3))
         self.accumulate_steps = int(train_opt.get('accumulate_steps', 1))
@@ -396,21 +397,29 @@ class ImageISBModel(ImageCleanModel):
             l_color = F.l1_loss(pred_mean, gt_mean)
         loss_dict['l_color'] = l_color
 
+        # Chroma loss: penalize per-pixel saturation reduction via channel std
+        l_chroma = torch.tensor(0.0, device=predicted_x0_for_loss.device)
+        if self.chroma_loss_weight > 0:
+            pred_std = predicted_x0_for_loss.std(dim=1)  # [b, h, w]
+            gt_std = gt.std(dim=1)  # [b, h, w]
+            l_chroma = F.l1_loss(pred_std.mean(dim=(1, 2)), gt_std.mean(dim=(1, 2)))
+        loss_dict['l_chroma'] = l_chroma
+
         # FFT loss: frequency domain constraint
         l_fft = torch.tensor(0.0, device=predicted_x0_for_loss.device)
         if self.cri_fft is not None:
             l_fft = self.cri_fft(predicted_x0_for_loss, gt)
         loss_dict['l_fft'] = l_fft
 
-        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color + FFT
+        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color + chroma + FFT
         l_total = self.bridge_weight * (
             self.x0_loss_weight * l_x0
             + self.pixel_loss_weight * l_pix
-        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color + self.fft_loss_weight * l_fft
+        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color + self.chroma_loss_weight * l_chroma + self.fft_loss_weight * l_fft
         if self.nan_guard and self._has_nonfinite_tensor(l_total):
             logger.warning(
                 f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
-                f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}, l_color={l_color.item()}'
+                f'l_x0={l_x0.item()}, l_pix={l_pix.item()}, l_tv={l_tv.item()}, l_color={l_color.item()}, l_chroma={l_chroma.item()}'
             )
             self._mark_nan_skip('loss_nonfinite')
             self.optimizer_g.zero_grad(set_to_none=True)
