@@ -562,7 +562,8 @@ class ECAFormerISB(nn.Module):
                  learnable_residual_scale=False,
                  decouple_x1_from_bridge=False,
                  mapping_bias=False,
-                 use_eca=True, eca_gamma=2, eca_beta=1):
+                 use_eca=True, eca_gamma=2, eca_beta=1,
+                 channel_scale_init=None):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -626,6 +627,17 @@ class ECAFormerISB(nn.Module):
 
         # Feature extractor (replaces Illumination_Estimator)
         self.estimator = ShallowDeepConv(n_feat, n_fea_out=self.illumination_channels)
+
+        # Learnable per-channel scale for illumination map (compensate green bias)
+        # Accepts float (uniform) or [R, G, B] list (per-channel init)
+        if channel_scale_init is None:
+            cs = [1.0, 1.0, 1.0]
+        elif isinstance(channel_scale_init, (list, tuple)):
+            cs = [float(v) for v in channel_scale_init]
+        else:
+            v = float(channel_scale_init)
+            cs = [v, v, v]
+        self.channel_scale = nn.Parameter(torch.tensor(cs).view(1, 3, 1, 1))
 
         if use_sb:
             if self.cond_type == "adaln":
@@ -693,6 +705,8 @@ class ECAFormerISB(nn.Module):
         visual_fea, illu_map = self.estimator(x_low)
         if self.illumination_map_activation == 'sigmoid':
             illu_map = torch.sigmoid(illu_map)
+        if self.illumination_channels == 1:
+            illu_map = illu_map * self.channel_scale  # [B,1,H,W] * [1,3,1,1] → [B,3,H,W]
         x1 = x_low * illu_map + x_low
         if self.pre_denoiser_x1_clamp:
             x1 = torch.clamp(x1, 0.0, 1.0)
