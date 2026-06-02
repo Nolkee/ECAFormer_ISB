@@ -359,6 +359,7 @@ class CrossAttenUnet_ISB(nn.Module):
                  num_blocks=None, output_activation='sigmoid',
                  use_out_norm=True, residual_scale_init=1.0,
                  learnable_residual_scale=False, mapping_bias=False,
+                 zero_init_mapping_bias=False,
                  use_eca=True, eca_gamma=2, eca_beta=1):
         super().__init__()
         if num_blocks is None:
@@ -473,6 +474,8 @@ class CrossAttenUnet_ISB(nn.Module):
         self.lrelu = nn.LeakyReLU(negative_slope=0.1, inplace=True)
 
         self.apply(self._init_weights)
+        if zero_init_mapping_bias and self.mapping.bias is not None:
+            nn.init.constant_(self.mapping.bias, 0)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -562,6 +565,7 @@ class ECAFormerISB(nn.Module):
                  learnable_residual_scale=False,
                  decouple_x1_from_bridge=False,
                  mapping_bias=False,
+                 zero_init_mapping_bias=False,
                  use_eca=True, eca_gamma=2, eca_beta=1,
                  channel_scale_init=None):
         super().__init__()
@@ -649,6 +653,7 @@ class ECAFormerISB(nn.Module):
                     residual_scale_init=residual_scale_init,
                     learnable_residual_scale=learnable_residual_scale,
                     mapping_bias=mapping_bias,
+                    zero_init_mapping_bias=zero_init_mapping_bias,
                     use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
                 )
             elif self.cond_type == "none":
