@@ -15,6 +15,18 @@ PSNR 22.10 @ iter 10K (SSIM 0.7882, LPIPS 0.1660). Best SSIM/LPIPS @ iter 14K (0
 
 Key params: `channel_scale_init: [1.0, 0.95, 1.0]`, `residual_scale_init: 0.6`, `illumination_channels: 1`, `use_out_norm: true`, `output_activation: identity`, `train_output_clamp: true`
 
+## R43 Series: Root-Cause Green Fix (2026-06-04)
+
+**Core Innovation**: `identity_scale` in x1 construction — `x1 = x_low * illu_map + identity_scale * x_low`
+
+Previous fixes (R38-R42) targeted downstream (channel_scale, residual_scale, losses), but x_low's green bias was injected at 2x weight (illumination term + identity term). R43 directly suppresses green in the identity shortcut.
+
+- **R43a**: `identity_scale=[1.0, 0.92, 1.0]`, neutral residual. Expected PSNR 22.3-22.5
+- **R43b**: `identity_scale=[1.0, 0.90, 1.0]` + per-channel residual. Double suppression
+- **R43c**: R43a + green_loss. Triple defense
+
+Launch: `bash train_r43_series.sh` or `bash auto_train_all.sh r43`
+
 ## Config Conventions
 
 - `total_iter: 24000`, `batch_size_per_gpu: 24`, `gt_size: 128`, `lr: 6e-5`
@@ -45,4 +57,5 @@ R{number}{letter}: R38a, R38b, R38c etc. Same number = same series, letters = va
 - Do NOT use `use_out_norm: 'post'` — GroupNorm(1,3) at output breaks training, PSNR plateaus ~13 (R41a/d confirmed)
 - Do NOT use `illumination_channels: 3` without stabilization — too much freedom early, causes training crash at ~8K (R41c confirmed)
 - `zero_init_mapping_bias: true` is safe — PSNR 21.72, best SSIM/LPIPS of all configs (R41b)
+- R43 architecture change: `identity_scale` in x1 construction targets green bias at injection point (推理时生效)
 - Default to 24K iters for ablation, longer only for confirmed winners

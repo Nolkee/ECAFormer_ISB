@@ -573,7 +573,8 @@ class ECAFormerISB(nn.Module):
                  zero_init_mapping_bias=False,
                  use_eca=True, eca_gamma=2, eca_beta=1,
                  channel_scale_init=None,
-                 green_norm=False, channel_permute_prob=0.0):
+                 green_norm=False, channel_permute_prob=0.0,
+                 identity_scale_init=None, learnable_identity_scale=False):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -603,6 +604,7 @@ class ECAFormerISB(nn.Module):
         self.decouple_x1_from_bridge = bool(decouple_x1_from_bridge)
         self.green_norm = bool(green_norm)
         self.channel_permute_prob = float(channel_permute_prob)
+        self.learnable_identity_scale = bool(learnable_identity_scale)
         if not 0.0 <= self.self_cond_prob <= 1.0:
             raise ValueError(
                 f"ECAFormerISB: self_cond_prob={self.self_cond_prob} is invalid. "
@@ -650,6 +652,21 @@ class ECAFormerISB(nn.Module):
             v = float(channel_scale_init)
             cs = [v, v, v]
         self.channel_scale = nn.Parameter(torch.tensor(cs).view(1, 3, 1, 1))
+
+        # R43: Identity scale for x1 construction (suppress green in x_low shortcut)
+        # Targets root cause: x1 = x_low * illu_map + x_low carries green bias at 2x weight
+        if identity_scale_init is None:
+            ids = [1.0, 1.0, 1.0]
+        elif isinstance(identity_scale_init, (list, tuple)):
+            ids = [float(v) for v in identity_scale_init]
+        else:
+            v = float(identity_scale_init)
+            ids = [v, v, v]
+        identity_scale = torch.tensor(ids).view(1, 3, 1, 1)
+        if self.learnable_identity_scale:
+            self.identity_scale = nn.Parameter(identity_scale)
+        else:
+            self.register_buffer('identity_scale', identity_scale)
 
         if use_sb:
             if self.cond_type == "adaln":
@@ -737,7 +754,11 @@ class ECAFormerISB(nn.Module):
             illu_map = torch.sigmoid(illu_map)
         if self.illumination_channels == 1:
             illu_map = illu_map * self.channel_scale  # [B,1,H,W] * [1,3,1,1] → [B,3,H,W]
-        x1 = x_low * illu_map + x_low
+
+        # R43: Channel-aware x1 construction with identity_scale
+        # x1 = x_low * illu_map + identity_scale * x_low
+        # Suppresses green bias in the x_low shortcut term (root cause fix)
+        x1 = x_low * illu_map + self.identity_scale.to(dtype=x_low.dtype) * x_low
         if self.pre_denoiser_x1_clamp:
             x1 = torch.clamp(x1, 0.0, 1.0)
         bridge_base = self._get_bridge_base(x_low, x1)
