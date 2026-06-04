@@ -14,6 +14,7 @@ Architecture overview:
 """
 
 import math
+import random
 import warnings
 import torch
 import torch.nn as nn
@@ -453,7 +454,11 @@ class CrossAttenUnet_ISB(nn.Module):
         if _norm_mode != 'post':
             self.post_norm = None
         self.learnable_residual_scale = bool(learnable_residual_scale)
-        residual_scale = torch.tensor(float(residual_scale_init))
+        if isinstance(residual_scale_init, (list, tuple)):
+            rs = [float(v) for v in residual_scale_init]
+            residual_scale = torch.tensor(rs).view(1, 3, 1, 1)
+        else:
+            residual_scale = torch.tensor(float(residual_scale_init))
         if self.learnable_residual_scale:
             self.residual_scale = nn.Parameter(residual_scale)
         else:
@@ -567,7 +572,8 @@ class ECAFormerISB(nn.Module):
                  mapping_bias=False,
                  zero_init_mapping_bias=False,
                  use_eca=True, eca_gamma=2, eca_beta=1,
-                 channel_scale_init=None):
+                 channel_scale_init=None,
+                 green_norm=False, channel_permute_prob=0.0):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -592,9 +598,11 @@ class ECAFormerISB(nn.Module):
         self.pre_denoiser_x1_clamp = bool(pre_denoiser_x1_clamp)
         self.illumination_channels = int(illumination_channels)
         self.use_out_norm = use_out_norm
-        self.residual_scale_init = float(residual_scale_init)
+        self.residual_scale_init = residual_scale_init
         self.learnable_residual_scale = bool(learnable_residual_scale)
         self.decouple_x1_from_bridge = bool(decouple_x1_from_bridge)
+        self.green_norm = bool(green_norm)
+        self.channel_permute_prob = float(channel_permute_prob)
         if not 0.0 <= self.self_cond_prob <= 1.0:
             raise ValueError(
                 f"ECAFormerISB: self_cond_prob={self.self_cond_prob} is invalid. "
@@ -706,6 +714,23 @@ class ECAFormerISB(nn.Module):
         return x1
 
     def forward(self, x_low, x_high=None):
+        # Green normalization: equalize green channel mean to red channel mean
+        if self.training and self.green_norm:
+            r_mean = x_low[:, 0:1].mean(dim=(2, 3), keepdim=True)
+            g_mean = x_low[:, 1:2].mean(dim=(2, 3), keepdim=True)
+            x_low = x_low.clone()
+            x_low[:, 1:2] = torch.clamp(x_low[:, 1:2] - (g_mean - r_mean), 0.0, 1.0)
+            if x_high is not None:
+                x_high = x_high.clone()
+                x_high[:, 1:2] = torch.clamp(x_high[:, 1:2] - (g_mean - r_mean), 0.0, 1.0)
+
+        # Channel permutation augmentation
+        if self.training and self.channel_permute_prob > 0 and random.random() < self.channel_permute_prob:
+            perm = torch.randperm(3, device=x_low.device)
+            x_low = x_low[:, perm]
+            if x_high is not None:
+                x_high = x_high[:, perm]
+
         # ShallowDeepConv → visual features + illumination map
         visual_fea, illu_map = self.estimator(x_low)
         if self.illumination_map_activation == 'sigmoid':

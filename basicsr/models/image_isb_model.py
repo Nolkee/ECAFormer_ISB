@@ -60,6 +60,7 @@ class ImageISBModel(ImageCleanModel):
         self.tv_loss_weight = train_opt.get('tv_loss_weight', 0.01)
         self.color_loss_weight = float(train_opt.get('color_loss_weight', 0.0))
         self.chroma_loss_weight = float(train_opt.get('chroma_loss_weight', 0.0))
+        self.green_loss_weight = float(train_opt.get('green_loss_weight', 0.0))
         self.x0_loss_type = str(train_opt.get('x0_loss_type', 'mse')).lower()
         self.x0_charbonnier_eps = float(train_opt.get('x0_charbonnier_eps', 1e-3))
         self.accumulate_steps = int(train_opt.get('accumulate_steps', 1))
@@ -405,17 +406,25 @@ class ImageISBModel(ImageCleanModel):
             l_chroma = F.l1_loss(pred_std.mean(dim=(1, 2)), gt_std.mean(dim=(1, 2)))
         loss_dict['l_chroma'] = l_chroma
 
+        # Green loss: penalize green channel excess over (R+B)/2
+        l_green = torch.tensor(0.0, device=predicted_x0_for_loss.device)
+        if self.green_loss_weight > 0:
+            pred_rb_mean = (predicted_x0_for_loss[:, 0:1] + predicted_x0_for_loss[:, 2:3]) / 2
+            green_excess = torch.clamp(predicted_x0_for_loss[:, 1:2] - pred_rb_mean, min=0)
+            l_green = green_excess.mean()
+        loss_dict['l_green'] = l_green
+
         # FFT loss: frequency domain constraint
         l_fft = torch.tensor(0.0, device=predicted_x0_for_loss.device)
         if self.cri_fft is not None:
             l_fft = self.cri_fft(predicted_x0_for_loss, gt)
         loss_dict['l_fft'] = l_fft
 
-        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color + chroma + FFT
+        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color + chroma + green + FFT
         l_total = self.bridge_weight * (
             self.x0_loss_weight * l_x0
             + self.pixel_loss_weight * l_pix
-        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color + self.chroma_loss_weight * l_chroma + self.fft_loss_weight * l_fft
+        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color + self.chroma_loss_weight * l_chroma + self.green_loss_weight * l_green + self.fft_loss_weight * l_fft
         if self.nan_guard and self._has_nonfinite_tensor(l_total):
             logger.warning(
                 f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
