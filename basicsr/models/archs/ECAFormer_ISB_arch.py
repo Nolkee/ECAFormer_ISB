@@ -574,7 +574,8 @@ class ECAFormerISB(nn.Module):
                  use_eca=True, eca_gamma=2, eca_beta=1,
                  channel_scale_init=None,
                  green_norm=False, channel_permute_prob=0.0,
-                 identity_scale_init=None, learnable_identity_scale=False):
+                 identity_scale_init=None, learnable_identity_scale=False,
+                 identity_scale_warmup_iters=0, **kwargs):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -669,7 +670,7 @@ class ECAFormerISB(nn.Module):
             self.register_buffer('identity_scale', identity_scale)
 
         # R43 Warmup: Gradually introduce identity_scale to avoid AdaLN conflict
-        self.identity_scale_warmup_iters = int(opt.get('identity_scale_warmup_iters', 0))
+        self.identity_scale_warmup_iters = int(identity_scale_warmup_iters)
         if self.identity_scale_warmup_iters > 0:
             self.register_buffer('identity_scale_start', torch.tensor([1.0, 1.0, 1.0]).view(1, 3, 1, 1))
             self.register_buffer('identity_scale_target', identity_scale.clone())

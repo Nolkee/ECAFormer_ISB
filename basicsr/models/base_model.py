@@ -316,6 +316,24 @@ class BaseModel():
             if k.startswith('module.'):
                 load_net[k[7:]] = v
                 load_net.pop(k)
+
+        # Backward compatibility: Add missing keys with default values for new architecture params
+        net_keys = set(net.state_dict().keys())
+        load_keys = set(load_net.keys())
+        missing_keys = net_keys - load_keys
+
+        if missing_keys:
+            logger.info(f'Backward compatibility: Adding {len(missing_keys)} missing keys with defaults')
+            for key in missing_keys:
+                if 'identity_scale' in key:
+                    # Default identity_scale = [1.0, 1.0, 1.0] (no suppression)
+                    load_net[key] = torch.tensor([1.0, 1.0, 1.0]).view(1, 3, 1, 1)
+                    logger.info(f'  Added {key} = [1.0, 1.0, 1.0]')
+                elif 'identity_scale_start' in key or 'identity_scale_target' in key:
+                    # Warmup buffers, use neutral [1,1,1]
+                    load_net[key] = torch.tensor([1.0, 1.0, 1.0]).view(1, 3, 1, 1)
+                    logger.info(f'  Added {key} = [1.0, 1.0, 1.0]')
+
         self._print_different_keys_loading(net, load_net, strict)
         net.load_state_dict(load_net, strict=strict)
 

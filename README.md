@@ -5,20 +5,57 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 ## Quick Start
 
 ```bash
-# Train R43a (recommended - identity_scale green fix)
-python -m basicsr.train --opt Options/ISB_ecaformer_r43a_identity_scale.yml
+# Clone repository
+git clone https://github.com/Nolkee/ECAFormer_ISB.git
+cd ECAFormer_ISB
 
-# Or use tmux pipeline (R42a validation → R43 series)
-tmux new -s train "bash train_r42a_then_r43.sh"
+# Install dependencies (see docs/QUICKSTART.md for details)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# Install basicsr and other dependencies
+
+# Train stable baseline (recommended)
+python -m basicsr.train --opt Options/ISB_ecaformer_r42a_per_ch_res.yml
+
+# Run diagnostic experiments
+bash diagnostic_scripts/quick_test_warmup.sh
 ```
 
-See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) for tmux workflow, monitoring, and troubleshooting.
+**Full guide**: [docs/QUICKSTART.md](docs/QUICKSTART.md)
 
-## Current Best
+## Current Best: R42a (Stable)
 
-**R38c baseline**: PSNR 22.10 @ 10K iter (SSIM 0.788, LPIPS 0.166)
+**Config**: `Options/ISB_ecaformer_r42a_per_ch_res.yml`  
+**Result**: PSNR 21.64 @ 10.5K iter (SSIM 0.788, LPIPS 0.164)  
+**Status**: ✅ Stable training, no oscillation
 
-**R43 series** (expected PSNR 22.3-22.5): Root-cause green tint fix via `identity_scale` in x1 construction.
+**Why R42a over R38c/R43a**: R38c achieves higher PSNR (22.10) but has unstable training at 3500-6000 iterations. R42a uses per-channel `residual_scale` at denoiser output, avoiding AdaLN conflict.
+
+## Project Structure
+
+```
+ECAFormer_ISB/
+├── basicsr/                    # Core training framework
+│   ├── models/
+│   │   ├── archs/ECAFormer_ISB_arch.py  # Main architecture
+│   │   └── image_isb_model.py           # Training loop
+├── Options/                    # Experiment configs (R11-R43 series)
+├── diagnostic_scripts/         # Training stability analysis tools
+├── legacy_training_scripts/    # Historical training scripts (R11-R43)
+├── tools/                      # Checkpoint diagnosis, inference
+├── docs/                       # Documentation
+│   ├── QUICKSTART.md          # Installation & training guide
+│   └── ARCHITECTURE.md        # Design details & findings
+├── CLAUDE.md                   # Project conventions for AI
+└── README.md                   # This file
+```
+
+## Key Findings (2026-06-08)
+
+**Training instability pattern (R38c, R43a)**: PSNR drops at 3500-6000 iterations
+
+**Root cause**: Early-stage channel imbalance (identity_scale/channel_scale) → AdaLN learns compensatory modulation → Gradient conflict when learning rate transitions
+
+**Solution**: Apply channel correction at denoiser **output** (residual_scale) rather than x1 construction or illumination map
 
 ## Architecture
 
@@ -26,62 +63,33 @@ See [TRAINING_GUIDE.md](TRAINING_GUIDE.md) for tmux workflow, monitoring, and tr
 - **Training**: `basicsr/models/image_isb_model.py` — ImageISBModel with bridge loss + pixel/perceptual/color/chroma losses
 - **Data**: LOLv1 (485 train / 15 test), LOLv2 Real (~689 train / ~100 test)
 
-## Key Innovation (R43)
-
-```python
-# Previous (R38-R42): x_low's green bias injected at 2x weight
-x1 = x_low * illu_map + x_low
-
-# R43: Channel-aware identity shortcut
-x1 = x_low * illu_map + identity_scale * x_low
-# identity_scale = [1.0, 0.92, 1.0] suppresses green at source
-```
-
-See [CLAUDE.md](CLAUDE.md) for full project conventions and [TRAINING_GUIDE.md](TRAINING_GUIDE.md) for training workflow.
+**Details**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ## Requirements
 
 - Python 3.8+
-- PyTorch 1.11+
-- CUDA 11.3+
-- basicsr (included in repo)
+- PyTorch 1.11+ with CUDA 11.x/12.x
+- 1x GPU (12GB+ VRAM recommended)
+- basicsr, lpips, tensorboard, pyyaml
 
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-pip install -r requirements.txt  # if available
-```
+## Documentation
 
-## Dataset Setup
-
-```bash
-# LOLv1 structure
-data/LOLv1/
-├── Train/
-│   ├── input/   # Low-light images
-│   └── target/  # Normal-light images
-└── Test/
-    ├── input/
-    └── target/
-
-# LOLv2 Real structure
-data/LOLv2Real/
-├── Train/
-│   ├── Low/     # Low-light images
-│   └── Normal/  # Normal-light images
-└── Test/
-    ├── Low/
-    └── Normal/
-```
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)** — Installation, training, inference, troubleshooting
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — Design details, stability findings, model variants
+- **[diagnostic_scripts/README.md](diagnostic_scripts/README.md)** — Diagnostic framework for training analysis
+- **[legacy_training_scripts/README.md](legacy_training_scripts/README.md)** — Experiment history (R11-R43)
+- **[CLAUDE.md](CLAUDE.md)** — Project conventions for AI collaboration
 
 ## Experiments
 
-All configs in `Options/`:
-- **R38c**: Baseline (PSNR 22.10)
-- **R42 series**: 4 orthogonal green fixes (per-channel residual, green_norm, green_loss, channel_permute)
-- **R43 series**: identity_scale root-cause fix (recommended)
+**Active research**: R43a-warmup diagnostic (testing identity_scale warmup hypothesis)
 
-Training logs and checkpoints saved to `experiments/<config-name>/`.
+**Stable baseline**: R42a with per-channel residual_scale
+
+**Historical**: 33 experiments (R11-R43) archived in `legacy_training_scripts/`
+
+Training logs and checkpoints: `experiments/<config-name>/`
 
 ## License
 
-This project is based on [BasicSR](https://github.com/XPixelGroup/BasicSR).
+Based on [BasicSR](https://github.com/XPixelGroup/BasicSR).

@@ -1,31 +1,34 @@
 # ECAFormer-ISB
 
-Low-light image enhancement using Image Schrodinger Bridge (ISB) with ECAFormer backbone. Trained on LOLv1/v2 datasets.
+Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer backbone. LOLv1/v2 datasets.
 
-## Key Architecture
+## Key Files
 
 - **Model**: `basicsr/models/archs/ECAFormer_ISB_arch.py` — ECAFormerISB (denoiser) + ShallowDeepConv (estimator)
 - **Training**: `basicsr/models/image_isb_model.py` — ImageISBModel with bridge loss + pixel/perceptual/color/chroma losses
 - **Config**: `Options/ISB_ecaformer_r*.yml` — YAML configs, `model_type: ImageISBModel`
-- **Data**: `data/LOLv1/` (485 train / 15 test), `data/LOLv2Real/` (~689 train / ~100 test)
+- **Data**: `data/LOLv1/` (Train/input, Train/target), `data/LOLv2Real/` (Train/Low, Train/Normal)
+- **Diagnostic tools**: `diagnostic_scripts/` — Training stability analysis, checkpoint diagnosis
+- **Legacy scripts**: `legacy_training_scripts/` — Historical experiments R11-R43
 
-## Current Best: R38c
+## Current Stable Best: R42a
 
-PSNR 22.10 @ iter 10K (SSIM 0.7882, LPIPS 0.1660). Best SSIM/LPIPS @ iter 14K (0.7918/0.1572). Config: `Options/ISB_ecaformer_r38c_chscale_chroma.yml`
+**Config**: `Options/ISB_ecaformer_r42a_per_ch_res.yml`  
+**Result**: PSNR 21.64 @ 10.5K (SSIM 0.788, LPIPS 0.164)  
+**Key**: `residual_scale_init: [0.6, 0.5, 0.6]` — per-channel at denoiser output  
+**Status**: ✅ Stable training, no oscillation
 
-Key params: `channel_scale_init: [1.0, 0.95, 1.0]`, `residual_scale_init: 0.6`, `illumination_channels: 1`, `use_out_norm: true`, `output_activation: identity`, `train_output_clamp: true`
+## Training Stability Issue (3500-6000 iter)
 
-## R43 Series: Root-Cause Green Fix (2026-06-04)
+**Affected configs**: R38c, R43a (without warmup)  
+**Symptom**: PSNR drops from ~20 to 17-18, then recovers with oscillation  
+**Root cause** (diagnosed 2026-06-08): Early x1 channel imbalance → AdaLN overcompensation → gradient conflict at LR transition phase
 
-**Core Innovation**: `identity_scale` in x1 construction — `x1 = x_low * illu_map + identity_scale * x_low`
+**Where channel correction applied matters**:
+- ❌ x1 construction (`identity_scale`) or illumination map (`channel_scale`) → Triggers AdaLN conflict
+- ✅ Denoiser output (`residual_scale`) → Stable, no conflict
 
-Previous fixes (R38-R42) targeted downstream (channel_scale, residual_scale, losses), but x_low's green bias was injected at 2x weight (illumination term + identity term). R43 directly suppresses green in the identity shortcut.
-
-- **R43a**: `identity_scale=[1.0, 0.92, 1.0]`, neutral residual. Expected PSNR 22.3-22.5
-- **R43b**: `identity_scale=[1.0, 0.90, 1.0]` + per-channel residual. Double suppression
-- **R43c**: R43a + green_loss. Triple defense
-
-Launch: `bash train_r43_series.sh` or `bash auto_train_all.sh r43`
+**Mitigation**: Use R42a, or R43a-warmup with `identity_scale_warmup_iters: 5000`
 
 ## Config Conventions
 
@@ -34,28 +37,45 @@ Launch: `bash train_r43_series.sh` or `bash auto_train_all.sh r43`
 - `early_stop_patience_val: 8`, `use_amp: true`, `grad_clip_value: 0.02`
 - All losses: Charbonnier pixel + VGG perceptual + color + chroma + TV
 
-## Training
+## Training Commands
 
+**Stable baseline**:
 ```bash
-python -m basicsr.train --opt Options/ISB_ecaformer_r38c_chscale_chroma.yml
-# Or use shell scripts: bash train_r41_series.sh
+python -m basicsr.train --opt Options/ISB_ecaformer_r42a_per_ch_res.yml
 ```
 
-## Green Tint Root Cause (diagnosed 2026-06-03)
+**Diagnostic experiments**:
+```bash
+bash diagnostic_scripts/quick_test_warmup.sh           # 8K quick test
+bash diagnostic_scripts/run_all_diagnostic_experiments.sh  # Full suite
+```
 
-`x1 = x_low * (1 + illu_map)` preserves x_low's Bayer green bias. Residual shortcut injects it into output. `channel_scale` operates on illumination (wrong target). See memory `project_green_tint_direction.md` for full analysis.
+**Historical scripts**: See `legacy_training_scripts/`
 
-## Experiment Naming
+## Forbidden Configurations
 
-R{number}{letter}: R38a, R38b, R38c etc. Same number = same series, letters = variants within series.
+- ❌ `output_activation: sigmoid` — Kills dynamic range (R39 confirmed)
+- ❌ `channel_scale < 0.90` — PSNR loss > green fix benefit (R40 confirmed)
+- ❌ `use_out_norm: 'post'` — GroupNorm(1,3) at output causes plateau ~13 PSNR (R41a/d)
+- ❌ `illumination_channels: 3` without stabilization — Training crash at ~8K (R41c)
+- ❌ `identity_scale` or aggressive `channel_scale` without warmup — 3500-6000 instability
 
 ## Rules
 
-- Do NOT add BGR/RGB conversions — data pipeline already handles bgr2rgb correctly
-- Do NOT use sigmoid output activation — kills dynamic range (R39 confirmed)
-- Do NOT tune channel_scale below 0.90 — hurts PSNR more than it helps green (R40 confirmed)
-- Do NOT use `use_out_norm: 'post'` — GroupNorm(1,3) at output breaks training, PSNR plateaus ~13 (R41a/d confirmed)
-- Do NOT use `illumination_channels: 3` without stabilization — too much freedom early, causes training crash at ~8K (R41c confirmed)
-- `zero_init_mapping_bias: true` is safe — PSNR 21.72, best SSIM/LPIPS of all configs (R41b)
-- R43 architecture change: `identity_scale` in x1 construction targets green bias at injection point (推理时生效)
+- Do NOT add BGR/RGB conversions — data pipeline handles bgr2rgb correctly
+- Do NOT amend git commits unless explicitly requested — create new commits
+- Do NOT add emojis unless user requests
+- Do NOT create markdown docs unless user requests
+- Use `residual_scale` for channel correction (not `identity_scale` or `channel_scale`)
 - Default to 24K iters for ablation, longer only for confirmed winners
+- When implementing warmup: Pass `current_iter` from training loop to network forward
+- **Backward compatibility**: `base_model.py` auto-fills missing `identity_scale` keys with [1,1,1] for old checkpoints
+- **LOLv2Real paths**: Use `Train/Low` and `Train/Normal` (not `input`/`target`)
+- **NaN guard**: `nan_guard: true` in config skips optimizer steps on non-finite gradients (expected behavior)
+
+## Deep Dive Documentation
+
+- **Architecture & design choices**: `docs/ARCHITECTURE.md`
+- **Quick start & troubleshooting**: `docs/QUICKSTART.md`
+- **Diagnostic framework**: `diagnostic_scripts/README.md`
+- **Experiment history**: `legacy_training_scripts/README.md`
