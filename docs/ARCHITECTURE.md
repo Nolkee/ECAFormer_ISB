@@ -116,6 +116,20 @@ train_output_clamp: true
 - 🔬 Testing: identity_scale warmup (R43a-warmup)
 - ❌ Avoid: Non-warmup identity_scale or aggressive channel_scale
 
+**Numerical stability consideration (`pre_denoiser_x1_clamp`)**:
+
+Controls whether x1 is clamped to [0,1] before entering denoiser:
+
+- **false (current default)**: Allows x1 > 1.0 from bright illumination estimates
+  - Risk: Extreme values + identity_scale warmup → early-step numerical overflow
+  - R43a-warmup is a "stress test" of warmup under extreme input ranges
+  - If NaN/gradient issues persist (>5% nan_guard triggers in first 1K iter), use safe config
+
+- **true (safe mode)**: Clips x1 to [0,1]
+  - Trade-off: May limit dynamic range for very bright scenes
+  - Ensures numerical stability during warmup phase
+  - Config: `Options/ISB_ecaformer_r43a_warmup_safe.yml`
+
 ### Forbidden Configurations
 
 - ❌ `output_activation: sigmoid` - Kills dynamic range (R39 confirmed)

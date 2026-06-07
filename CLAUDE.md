@@ -30,6 +30,11 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 
 **Mitigation**: Use R42a, or R43a-warmup with `identity_scale_warmup_iters: 5000`
 
+**Numerical stability note**: `pre_denoiser_x1_clamp: false` (current default) allows x1 to exceed [0,1] before denoiser
+- Risk: Early-step numerical overflow when combined with identity_scale warmup
+- R43a-warmup is a "stress test" of warmup robustness under extreme values
+- If NaN issues persist, use `Options/ISB_ecaformer_r43a_warmup_safe.yml` (clamp enabled)
+
 ## Config Conventions
 
 - `total_iter: 24000`, `batch_size_per_gpu: 24`, `gt_size: 128`, `lr: 6e-5`
