@@ -668,6 +668,12 @@ class ECAFormerISB(nn.Module):
         else:
             self.register_buffer('identity_scale', identity_scale)
 
+        # R43 Warmup: Gradually introduce identity_scale to avoid AdaLN conflict
+        self.identity_scale_warmup_iters = int(opt.get('identity_scale_warmup_iters', 0))
+        if self.identity_scale_warmup_iters > 0:
+            self.register_buffer('identity_scale_start', torch.tensor([1.0, 1.0, 1.0]).view(1, 3, 1, 1))
+            self.register_buffer('identity_scale_target', identity_scale.clone())
+
         if use_sb:
             if self.cond_type == "adaln":
                 self.denoiser = CrossAttenUnet_ISB(
@@ -758,7 +764,14 @@ class ECAFormerISB(nn.Module):
         # R43: Channel-aware x1 construction with identity_scale
         # x1 = x_low * illu_map + identity_scale * x_low
         # Suppresses green bias in the x_low shortcut term (root cause fix)
-        x1 = x_low * illu_map + self.identity_scale.to(dtype=x_low.dtype) * x_low
+        # Warmup: Gradually transition from [1,1,1] to target to avoid AdaLN conflict
+        if self.training and self.identity_scale_warmup_iters > 0:
+            current_iter = getattr(self, '_current_iter', 0)
+            alpha = min(1.0, current_iter / self.identity_scale_warmup_iters)
+            current_scale = (1 - alpha) * self.identity_scale_start + alpha * self.identity_scale_target
+        else:
+            current_scale = self.identity_scale
+        x1 = x_low * illu_map + current_scale.to(dtype=x_low.dtype) * x_low
         if self.pre_denoiser_x1_clamp:
             x1 = torch.clamp(x1, 0.0, 1.0)
         bridge_base = self._get_bridge_base(x_low, x1)

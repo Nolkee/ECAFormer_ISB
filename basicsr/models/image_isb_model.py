@@ -288,6 +288,9 @@ class ImageISBModel(ImageCleanModel):
         if (current_iter - 1) % self.accumulate_steps == 0:
             self.optimizer_g.zero_grad(set_to_none=True)
 
+        # Pass current_iter to network for identity_scale warmup
+        self.net_g._current_iter = current_iter
+
         with torch.amp.autocast('cuda', enabled=self.use_amp):
             preds = self.net_g(self.lq, self.gt)
 
