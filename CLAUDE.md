@@ -30,6 +30,13 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 
 **Mitigation**: Use R42a, or R43a-warmup with `identity_scale_warmup_iters: 5000`
 
+**Early-stage green tint during warmup** (diagnosed 2026-06-09):
+- R43a-warmup: identity_scale=[1,1,1] at iter 0 → no green suppression during warmup start
+- Symptom: Green-tinted output in first 500-1000 iterations
+- Solution: Use hybrid config with per-channel residual_scale [0.6,0.5,0.6] for immediate correction
+- Config: `Options/ISB_ecaformer_r43a_warmup_hybrid.yml`
+- See `diagnostic_scripts/WARMUP_GREEN_TINT.md` for details
+
 **Numerical stability note**: `pre_denoiser_x1_clamp: false` (current default) allows x1 to exceed [0,1] before denoiser
 - Risk: Early-step numerical overflow when combined with identity_scale warmup
 - R43a-warmup is a "stress test" of warmup robustness under extreme values
