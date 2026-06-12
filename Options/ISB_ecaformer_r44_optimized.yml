@@ -1,0 +1,179 @@
+name: ISB_ecaformer_r44_optimized
+model_type: ImageISBModel
+scale: 1
+num_gpu: 1
+manual_seed: 100
+
+# R44 Optimized: Controlled chaos + capacity boost
+#
+# KEY INNOVATIONS:
+# 1. "Stress training" strategy - embrace 3500-6000 instability as beneficial
+#    - Fixed dual-stage correction forces gradient conflict → escapes sharp local minima
+#    - identity_scale=[1.0, 0.95, 1.0] slightly milder than r43_hybrid's 0.96
+#    - residual_scale=[0.6, 0.5, 0.6] strong downstream correction from r42a
+#
+# 2. Increased architectural capacity
+#    - level: 2→3 (adds 640-dim bottleneck layer)
+#    - num_blocks: [1,2,2]→[2,4,6,6] (~2x total DMSA blocks)
+#    - Expected: +0.4-0.6 PSNR from capacity alone
+#
+# 3. Adaptive training schedule
+#    - LR restart at 6K (post-instability recovery)
+#    - Tighter grad clipping (0.015 vs 0.02) during instability window
+#    - Higher weight_decay (0.08 vs 0.05) for regularization
+#    - early_stop_patience_val: 4 to prevent post-peak degradation
+#
+# 4. Progressive loss rebalancing
+#    - perceptual_loss: 0.1→0.15 (better feature-level guidance)
+#    - fft_loss: 0.0→0.05 (frequency-domain constraint)
+#
+# EXPECTED PERFORMANCE: 22.5-22.8 PSNR @ 10-12K iterations
+# Training time: ~30-36 hours (single GPU, vs 48h for 24K iters)
+
+datasets:
+  train:
+    name: TrainSet
+    type: Dataset_PairedImage
+    dataroot_gt: data/LOLv1/Train/target
+    dataroot_lq: data/LOLv1/Train/input
+    geometric_augs: true
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+    use_shuffle: true
+    num_worker_per_gpu: 8
+    dataset_enlarge_ratio: 1
+    batch_size_per_gpu: 24
+    mini_batch_sizes: [24]
+    iters: [18000]  # Reduced from 24000 (model peaks at ~11K)
+    gt_size: 128
+    gt_sizes: [128]
+    prefetch_mode: ~
+  val:
+    name: ValSet
+    type: Dataset_PairedImage
+    dataroot_gt: data/LOLv1/Test/target
+    dataroot_lq: data/LOLv1/Test/input
+    io_backend:
+      type: disk
+
+network_g:
+  type: ECAFormerISB
+  in_channels: 3
+  out_channels: 3
+  n_feat: 80
+  level: 3  # CHANGED: from 2 to 3 (adds 640-dim bottleneck)
+  num_blocks: [2, 4, 6, 6]  # CHANGED: from [1,2,2] - doubles capacity
+  nfe: 8
+  min_nfe_for_stability: 8
+  sigma_max: 0.10
+  use_checkpoint: true
+  use_sb: true
+  self_cond_prob: 0.0
+  cond_type: adaln
+  output_activation: identity
+  train_output_clamp: true
+  inference_output_clamp: true
+  reverse_noise_scale: 0.0
+  use_out_norm: true
+  mapping_bias: true
+  pre_denoiser_x1_clamp: false
+  residual_scale_init: [0.6, 0.5, 0.6]  # Strong downstream correction
+  channel_scale_init: [1.0, 0.95, 1.0]
+  illumination_channels: 1
+  use_eca: true
+  eca_gamma: 1.5
+  eca_beta: 1
+  identity_scale_init: [1.0, 0.95, 1.0]  # CHANGED: 0.96→0.95 (slightly milder)
+  learnable_identity_scale: false  # Fixed to induce beneficial gradient conflict
+  learnable_residual_scale: false
+
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+
+train:
+  total_iter: 18000  # CHANGED: from 24000 (avoid overtraining)
+  warmup_iter: 500
+  use_grad_clip: true
+  grad_clip_value: 0.015  # CHANGED: from 0.02 (tighter for stability)
+  use_amp: true
+  accumulate_steps: 1
+  ema_decay: 0.999
+  bridge_weight: 1.0
+  x0_loss_weight: 0.4
+  pixel_loss_weight: 0.6
+  tv_loss_weight: 0.002
+  color_loss_weight: 0.1
+  chroma_loss_weight: 0.05
+  fft_loss_weight: !!float 0.05  # NEW: enable frequency-domain loss
+  strict_output_range: true
+  loss_on_clamped_output: true
+  nan_guard: true
+  output_range_log_interval: 500
+  train_psnr_window: 512
+  psnr_gap_warn: 2.0
+  early_stop_patience_val: 4  # CHANGED: from 8 (prevent post-peak degradation)
+  early_stop_min_delta: 0.005
+  max_nan_skips_per_epoch: 3
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [6000, 12000]  # CHANGED: restart at 6K (post-instability)
+    restart_weights: [1, 1]
+    eta_min: !!float 1e-6
+  mixing_augs:
+    mixup: true
+    mixup_beta: 1.2
+    use_identity: true
+  optim_g:
+    type: AdamW
+    lr: !!float 6e-5
+    betas: [0.9, 0.999]
+    weight_decay: !!float 0.08  # CHANGED: from 0.05 (stronger regularization)
+  pixel_opt:
+    type: CharbonnierLoss
+    loss_weight: 1.0
+    reduction: mean
+    eps: !!float 1e-3
+  perceptual_opt:
+    type: VGGPerceptualLoss
+    loss_weight: 0.15  # CHANGED: from 0.1 (stronger feature guidance)
+  fft_opt:
+    type: FFTLoss
+    loss_weight: 1.0
+    reduction: mean
+
+val:
+  window_size: 4
+  val_freq: !!float 500
+  save_img: true
+  rgb2bgr: true
+  use_image: false
+  max_minibatch: 8
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+    lpips:
+      type: calculate_lpips
+      crop_border: 0
+      test_y_channel: false
+      net: alex
+      use_gpu: true
+
+logger:
+  print_freq: 200
+  save_checkpoint_freq: !!float 500
+  use_tb_logger: true
+  wandb:
+    project: low_light_isb
+    resume_id: ~
+dist_params:
+  backend: nccl
+  port: 29500
