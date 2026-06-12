@@ -142,7 +142,6 @@ train:
   fft_opt:
     type: FFTLoss
     loss_weight: 1.0
-    reduction: mean
 
 val:
   window_size: 4
