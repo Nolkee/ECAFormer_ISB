@@ -11,12 +11,12 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 - **Diagnostic tools**: `diagnostic_scripts/` — Training stability analysis, checkpoint diagnosis
 - **Legacy scripts**: `legacy_training_scripts/` — Historical experiments R11-R43
 
-## Current Stable Best: R42a
+## Current Stable Best: R38c
 
-**Config**: `Options/ISB_ecaformer_r42a_per_ch_res.yml`  
-**Result**: PSNR 21.64 @ 10.5K (SSIM 0.788, LPIPS 0.164)  
-**Key**: `residual_scale_init: [0.6, 0.5, 0.6]` — per-channel at denoiser output  
-**Status**: ✅ Stable training, no oscillation
+**Config**: `Options/ISB_ecaformer_r38c_chscale_chroma.yml`  
+**Result**: PSNR 22.10 @ 10K (SSIM 0.7882, LPIPS 0.1660), best SSIM/LPIPS @ 14K (0.7918/0.1572)
+**Key params**: `residual_scale=0.6`, `channel_scale=[1.0, 0.95, 1.0]`, `chroma_loss=0.05`, `illumination_channels=1`
+**Status**: ✅ Training complete, but shows instability at 5.5K (解耦相变谷底)
 
 ## Training Stability Issue (3500-6000 iter)
 
@@ -30,17 +30,24 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 
 **Mitigation**: Use R42a, or R43a-warmup with `identity_scale_warmup_iters: 5000`
 
-**Early-stage green tint during warmup** (diagnosed 2026-06-09):
-- R43a-warmup: identity_scale=[1,1,1] at iter 0 → no green suppression during warmup start
-- Symptom: Green-tinted output in first 500-1000 iterations
-- Solution: Use hybrid config with per-channel residual_scale [0.6,0.5,0.6] for immediate correction
-- Config: `Options/ISB_ecaformer_r43a_warmup_hybrid.yml`
-- See `diagnostic_scripts/WARMUP_GREEN_TINT.md` for details
+## 🔥 Color Shift Root Cause (2026-06-17)
 
-**Numerical stability note**: `pre_denoiser_x1_clamp: false` (current default) allows x1 to exceed [0,1] before denoiser
-- Risk: Early-step numerical overflow when combined with identity_scale warmup
-- R43a-warmup is a "stress test" of warmup robustness under extreme values
-- If NaN issues persist, use `Options/ISB_ecaformer_r43a_warmup_safe.yml` (clamp enabled)
+**Problem**: Current ISB uses `illumination_channels=1` (single-channel illumination map) then manually expands with `channel_scale=[1.0, 0.95, 1.0]`. This:
+1. **Forces RGB to share one illumination value**
+2. Network CANNOT learn per-channel light differences
+3. Manual green suppression is a patch, not a fix
+
+**Original ECAFormer** used `illumination_channels=3` → each RGB channel had independent learned illumination → NO color issues
+
+**Solution**: R47 series returns to 3ch illumination (architecturally correct fix)
+
+## R42a: Most Stable Alternative
+
+**Config**: `Options/ISB_ecaformer_r42a_per_ch_res.yml`  
+**Result**: PSNR 21.64 @ 10.5K (SSIM 0.7888, LPIPS 0.1644), best SSIM/LPIPS @ 14K (0.7984/0.1568)
+**Key**: `residual_scale=[0.6, 0.5, 0.6]` — per-channel at denoiser output  
+**Status**: ✅ Stable training, no oscillation
+**Tradeoff**: -0.46 dB PSNR vs R38c, but better perceptual quality (SSIM/LPIPS)
 
 ## Config Conventions
 
@@ -71,6 +78,7 @@ bash diagnostic_scripts/run_all_diagnostic_experiments.sh  # Full suite
 - ❌ `use_out_norm: 'post'` — GroupNorm(1,3) at output causes plateau ~13 PSNR (R41a/d)
 - ❌ `illumination_channels: 3` without stabilization — Training crash at ~8K (R41c)
 - ❌ `identity_scale` or aggressive `channel_scale` without warmup — 3500-6000 instability
+- ❌ `green_norm` only in training mode — Train/val data mismatch, 泛化失败 (R45 confirmed)
 
 ## Rules
 
@@ -84,9 +92,11 @@ bash diagnostic_scripts/run_all_diagnostic_experiments.sh  # Full suite
 - **Backward compatibility**: `base_model.py` auto-fills missing `identity_scale` keys with [1,1,1] for old checkpoints
 - **LOLv2Real paths**: Use `Train/Low` and `Train/Normal` (not `input`/`target`)
 - **NaN guard**: `nan_guard: true` in config skips optimizer steps on non-finite gradients (expected behavior)
+- **Smart image saving**: Validation only saves images at early stage (first 3), near best, and final stage (last 2) to reduce disk usage
 
 ## Deep Dive Documentation
 
+- **Color shift root cause**: `docs/COLOR_SHIFT_ROOT_CAUSE.md` — Why illumination_channels=1 causes color bias
 - **Architecture & design choices**: `docs/ARCHITECTURE.md`
 - **Quick start & troubleshooting**: `docs/QUICKSTART.md`
 - **Diagnostic framework**: `diagnostic_scripts/README.md`
