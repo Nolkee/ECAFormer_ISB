@@ -327,28 +327,52 @@ class ImageCleanModel(BaseModel):
             torch.cuda.empty_cache()
 
             if save_img:
+                # Smart image saving: only save key stages to reduce disk usage
+                # - Early stage: first 3 validations (500, 1000, 1500)
+                # - Best stage: tracked by best_metric_iter
+                # - Final stage: last validation
+                should_save = False
 
                 if self.opt['is_train']:
+                    val_freq = self.opt['val'].get('val_freq', 5000)
+                    total_iter = self.opt['train'].get('total_iter', 200000)
 
-                    save_img_path = osp.join(self.opt['path']['visualization'],
-                                             img_name,
-                                             f'{img_name}_{current_iter}.png')
-
-                    save_gt_img_path = osp.join(self.opt['path']['visualization'],
-                                                img_name,
-                                                f'{img_name}_{current_iter}_gt.png')
+                    # Early stage: first 3 validations
+                    if current_iter <= val_freq * 3:
+                        should_save = True
+                    # Best metric stage: save if this might be best
+                    # (we save all, then clean up non-best later via a separate script if needed)
+                    elif hasattr(self, 'best_metric_results'):
+                        should_save = True
+                    # Final stage: last 2 validations
+                    elif current_iter >= total_iter - val_freq * 2:
+                        should_save = True
                 else:
+                    # Always save during testing
+                    should_save = True
 
-                    save_img_path = osp.join(
-                        self.opt['path']['visualization'], dataset_name,
-                        f'{img_name}.png')
-                    save_gt_img_path = osp.join(
-                        self.opt['path']['visualization'], dataset_name,
-                        f'{img_name}_gt.png')
+                if should_save:
+                    if self.opt['is_train']:
 
-                imwrite(sr_img, save_img_path)
-                if gt_img is not None:
-                    imwrite(gt_img, save_gt_img_path)
+                        save_img_path = osp.join(self.opt['path']['visualization'],
+                                                 img_name,
+                                                 f'{img_name}_{current_iter}.png')
+
+                        save_gt_img_path = osp.join(self.opt['path']['visualization'],
+                                                    img_name,
+                                                    f'{img_name}_{current_iter}_gt.png')
+                    else:
+
+                        save_img_path = osp.join(
+                            self.opt['path']['visualization'], dataset_name,
+                            f'{img_name}.png')
+                        save_gt_img_path = osp.join(
+                            self.opt['path']['visualization'], dataset_name,
+                            f'{img_name}_gt.png')
+
+                    imwrite(sr_img, save_img_path)
+                    if gt_img is not None:
+                        imwrite(gt_img, save_gt_img_path)
 
             if with_metrics:
                 if gt_metric is None:
