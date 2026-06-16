@@ -739,7 +739,8 @@ class ECAFormerISB(nn.Module):
 
     def forward(self, x_low, x_high=None):
         # Green normalization: equalize green channel mean to red channel mean
-        if self.training and self.green_norm:
+        # MUST apply in both training AND inference to keep data distribution consistent
+        if self.green_norm:
             r_mean = x_low[:, 0:1].mean(dim=(2, 3), keepdim=True)
             g_mean = x_low[:, 1:2].mean(dim=(2, 3), keepdim=True)
             x_low = x_low.clone()
