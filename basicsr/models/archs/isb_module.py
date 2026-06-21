@@ -105,7 +105,7 @@ class ISBEngine:
                 "Expected a value >= 0."
             )
 
-    def q_sample(self, x_0, x_1, t):
+    def q_sample(self, x_0, x_1, t, channel_noise_scale=None):
         """
         Sample from the forward bridge transport q(x_t | x_0, x_1).
 
@@ -120,6 +120,7 @@ class ISBEngine:
             x_0: Degraded images. Shape [b, c, h, w].
             x_1: Clean target images. Shape [b, c, h, w].
             t: Time values. Shape [b] with values in [0, 1].
+            channel_noise_scale: Per-channel noise scaling [R, G, B]. Default None (uniform).
 
         Returns:
             x_t: Noisy intermediate samples. Shape [b, c, h, w].
@@ -133,6 +134,11 @@ class ISBEngine:
         # Stochastic perturbation
         sigma = self.noise_schedule.sigma_t(t_expanded)
         eps = torch.randn_like(x_0)
+
+        # R48b: Per-channel noise scaling to reduce green channel gradient amplification
+        if channel_noise_scale is not None:
+            scale = torch.tensor(channel_noise_scale, device=eps.device, dtype=eps.dtype).view(1, 3, 1, 1)
+            eps = eps * scale
 
         x_t = mean + sigma * eps
         return x_t

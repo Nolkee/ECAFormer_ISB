@@ -278,11 +278,11 @@ class PreNorm(nn.Module):
 
 class AdaLayerNorm(nn.Module):
     """Adaptive Layer Norm: dynamically adjusts scale/shift based on t_emb."""
-    def __init__(self, dim, time_dim):
+    def __init__(self, dim, time_dim, init_scale=0.0):
         super().__init__()
         self.norm = nn.LayerNorm(dim, elementwise_affine=False)
         self.proj = nn.Linear(time_dim, dim * 2)
-        nn.init.constant_(self.proj.weight, 0)
+        nn.init.constant_(self.proj.weight, init_scale)
         nn.init.constant_(self.proj.bias, 0)
 
     def forward(self, x, t_emb):
@@ -326,14 +326,14 @@ class DMSABlock_AdaLN(nn.Module):
     The y-stream (auxiliary visual features) is NOT time-conditioned.
     """
     def __init__(self, dim, time_dim, dim_head=64, heads=8, num_blocks=2,
-                 use_eca=True, eca_gamma=2, eca_beta=1):
+                 use_eca=True, eca_gamma=2, eca_beta=1, adaln_init_scale=0.0):
         super().__init__()
         self.blocks = nn.ModuleList([])
         for _ in range(num_blocks):
             self.blocks.append(nn.ModuleList([
                 DMSA(dim=dim, dim_head=dim_head, heads=heads),
                 FeedForward(dim=dim, use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta),
-                AdaLayerNorm(dim, time_dim),  # norm before FF on x-stream
+                AdaLayerNorm(dim, time_dim, init_scale=adaln_init_scale),  # norm before FF on x-stream
             ]))
 
     def forward(self, x, y, t_emb):
@@ -361,7 +361,7 @@ class CrossAttenUnet_ISB(nn.Module):
                  use_out_norm=True, residual_scale_init=1.0,
                  learnable_residual_scale=False, mapping_bias=False,
                  zero_init_mapping_bias=False,
-                 use_eca=True, eca_gamma=2, eca_beta=1):
+                 use_eca=True, eca_gamma=2, eca_beta=1, adaln_init_scale=0.0):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -390,7 +390,8 @@ class CrossAttenUnet_ISB(nn.Module):
                     dim=dim_level, time_dim=time_dim,
                     num_blocks=num_blocks[i], dim_head=dim,
                     heads=dim_level // dim,
-                    use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta),
+                    use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
+                    adaln_init_scale=adaln_init_scale),
                 nn.Conv2d(dim_level, dim_level * 2, 4, 2, 1, bias=False),
                 nn.Conv2d(dim_level, dim_level * 2, 4, 2, 1, bias=False),
             ]))
@@ -401,7 +402,8 @@ class CrossAttenUnet_ISB(nn.Module):
             dim=dim_level, time_dim=time_dim,
             dim_head=dim, heads=dim_level // dim,
             num_blocks=num_blocks[-1],
-            use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta)
+            use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
+            adaln_init_scale=adaln_init_scale)
 
         # Decoder
         self.decoder_layers = nn.ModuleList([])
@@ -417,7 +419,8 @@ class CrossAttenUnet_ISB(nn.Module):
                     dim=dim_level // 2, time_dim=time_dim,
                     num_blocks=num_blocks[level - 1 - i], dim_head=dim,
                     heads=(dim_level // 2) // dim,
-                    use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta),
+                    use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
+                    adaln_init_scale=adaln_init_scale),
             ]))
             dim_level //= 2
 
@@ -575,7 +578,8 @@ class ECAFormerISB(nn.Module):
                  channel_scale_init=None,
                  green_norm=False, channel_permute_prob=0.0,
                  identity_scale_init=None, learnable_identity_scale=False,
-                 identity_scale_warmup_iters=0, **kwargs):
+                 identity_scale_warmup_iters=0, adaln_init_scale=0.0,
+                 channel_noise_scale=None, **kwargs):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -675,6 +679,16 @@ class ECAFormerISB(nn.Module):
             self.register_buffer('identity_scale_start', torch.tensor([1.0, 1.0, 1.0]).view(1, 3, 1, 1))
             self.register_buffer('identity_scale_target', identity_scale.clone())
 
+        # R48b: Per-channel bridge noise scaling
+        if channel_noise_scale is None:
+            cns = [1.0, 1.0, 1.0]
+        elif isinstance(channel_noise_scale, (list, tuple)):
+            cns = [float(v) for v in channel_noise_scale]
+        else:
+            v = float(channel_noise_scale)
+            cns = [v, v, v]
+        self.channel_noise_scale = cns  # Pass to isb_engine during q_sample
+
         if use_sb:
             if self.cond_type == "adaln":
                 self.denoiser = CrossAttenUnet_ISB(
@@ -687,6 +701,7 @@ class ECAFormerISB(nn.Module):
                     mapping_bias=mapping_bias,
                     zero_init_mapping_bias=zero_init_mapping_bias,
                     use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
+                    adaln_init_scale=float(adaln_init_scale),
                 )
             elif self.cond_type == "none":
                 # No time conditioning — plain CrossAttenUnet wrapped
@@ -796,7 +811,8 @@ class ECAFormerISB(nn.Module):
         x0 = x_high
 
         t = torch.rand(b, device=device, dtype=dtype).clamp(0.01, 1.0)
-        x_t = self.isb_engine.q_sample(x0, bridge_base, t)
+        # R48b: Pass channel_noise_scale to reduce green channel gradient amplification
+        x_t = self.isb_engine.q_sample(x0, bridge_base, t, channel_noise_scale=self.channel_noise_scale)
 
         # Self-conditioning stays on the x1 residual shortcut path.
         x1_cond = x1
