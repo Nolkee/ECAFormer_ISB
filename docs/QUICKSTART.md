@@ -50,28 +50,21 @@ data/LOLv1/
 
 ## Training
 
-### Recommended: Stable baseline (R42a)
+### Recommended: current champion (R48b)
 
 ```bash
-python -m basicsr.train --opt Options/ISB_ecaformer_r42a_per_ch_res.yml
+python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml
 ```
 
-**Expected result**: PSNR ~21.6 @ 10.5K iter, stable training
+**Expected result**: PSNR ~22.2 @ 11.5K iter, SSIM ~0.796
 
-### Diagnostic experiments (R43 series)
+### Active research: R49 series (green fix + stability)
 
 ```bash
-# Quick 8K test (2-3 hours)
-bash diagnostic_scripts/quick_test_warmup.sh
-
-# Full diagnostic suite (6-7 days single GPU)
-bash diagnostic_scripts/run_all_diagnostic_experiments.sh
-
-# Multi-GPU parallel (if available)
-bash diagnostic_scripts/run_parallel_experiments.sh
+bash train_r49_series.sh   # r49a (gray-world+ema_warmup) -> r49b (+anchor) -> r49c (+zero-bias)
 ```
 
-See `diagnostic_scripts/README.md` for details.
+Training auto-resumes from `experiments/<name>/training_states/latest.state` if present.
 
 ## Monitoring
 
@@ -87,16 +80,21 @@ bash diagnostic_scripts/monitor_training.sh
 ```
 
 **Key metrics**:
-- PSNR: ~21-22 dB target
+- PSNR: ~22+ dB target
 - SSIM: ~0.79-0.80 target
-- LPIPS: ~0.15-0.16 target (lower is better)
+- LPIPS: ~0.16 target (lower is better)
+
+**Where images are** (disk-safe policy — validation is memory-only by default):
+- `experiments/<name>/visualization/baseline/` — first validation, saved once
+- `experiments/<name>/visualization/best_results/` — overwritten on each new best PSNR
+- Checkpoints: `models/net_g_latest.pth` (running, overwritten), `best_psnr_*.pth` (weights-only, at experiment root)
 
 ## Inference
 
 ```bash
 python ECAFormer_inference.py \
-    --opt Options/ISB_ecaformer_r42a_per_ch_res.yml \
-    --checkpoint experiments/<exp_name>/models/net_g_10500.pth \
+    --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml \
+    --checkpoint experiments/<exp_name>/best_psnr_22.21_11500.pth \
     --input_dir <low_light_images> \
     --output_dir results/
 ```
@@ -112,11 +110,25 @@ batch_size_per_gpu: 16  # From default 24
 accumulate_steps: 2      # Maintain effective batch size
 ```
 
-### Training unstable (PSNR drops at 3500-6000 iter)
+### Early images look green
 
-Use R42a config (residual_scale at output) or R43a-warmup (identity_scale with warmup).
+Expected for configs without the R49 fixes: early output is a copy of the
+green-biased input, and validation uses EMA weights that lag the live net.
+Use `residual_gray_world: true` + `ema_warmup: true` (R49 configs).
+See `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 
-Avoid: R38c, R43a without warmup.
+### Mid-training PSNR drop (SSIM/LPIPS unaffected)
+
+Global brightness/color drift from unanchored illumination scale.
+Use `anchor_loss_weight: 0.05` (R49b/c configs).
+
+### Disk fills up
+
+Should not happen anymore: training keeps one `latest.state` + one
+`net_g_latest.pth` per experiment (atomic overwrite), and images are only
+written for baseline + best. If an old experiment hogs space, delete its
+`training_states/*.state`, `models/net_g_*.pth` and `visualization/` —
+best checkpoints at the experiment root are the ones worth keeping.
 
 ### Checkpoint analysis
 
@@ -138,20 +150,15 @@ python tools/diagnose_checkpoint.py \
 
 ```bash
 # Check training progress
-tail -f experiments/<exp_name>/train.log
+tail -f train_<config_name>.log
 
-# Find best checkpoint
-grep "Best metric" experiments/<exp_name>/train.log
-
-# Resume training
-python -m basicsr.train --opt <config>.yml --resume
-
-# Multi-GPU training
-CUDA_VISIBLE_DEVICES=0,1 python -m basicsr.train --opt <config>.yml
+# Resume training (automatic — just rerun the same command;
+# it picks up training_states/latest.state)
+python -m basicsr.train --opt <config>.yml
 ```
 
 ---
 
-**Dataset**: LOLv1/v2 Real  
-**Best config**: `Options/ISB_ecaformer_r42a_per_ch_res.yml`  
-**Training time**: ~48h (24K iter, single GPU)
+**Dataset**: LOLv1/v2 Real
+**Champion config**: `Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`
+**Training time**: ~24-48h (24K iter, single GPU; early stop usually triggers earlier)

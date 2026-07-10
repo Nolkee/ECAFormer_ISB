@@ -13,22 +13,21 @@ cd ECAFormer_ISB
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 # Install basicsr and other dependencies
 
-# Train stable baseline (recommended)
-python -m basicsr.train --opt Options/ISB_ecaformer_r42a_per_ch_res.yml
-
-# Run diagnostic experiments
-bash diagnostic_scripts/quick_test_warmup.sh
+# Train current champion
+python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml
 ```
 
 **Full guide**: [docs/QUICKSTART.md](docs/QUICKSTART.md)
 
-## Current Best: R42a (Stable)
+## Current Champion: R48b
 
-**Config**: `Options/ISB_ecaformer_r42a_per_ch_res.yml`  
-**Result**: PSNR 21.64 @ 10.5K iter (SSIM 0.788, LPIPS 0.164)  
-**Status**: ✅ Stable training, no oscillation
+**Config**: `Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`
+**Result**: PSNR 22.21 @ 11.5K iter (SSIM 0.7959, LPIPS 0.164)
+**Key**: 3-channel illumination + per-channel bridge noise `channel_noise_scale=[1.0, 0.8, 1.0]`
 
-**Why R42a over R38c/R43a**: R38c achieves higher PSNR (22.10) but has unstable training at 3500-6000 iterations. R42a uses per-channel `residual_scale` at denoiser output, avoiding AdaLN conflict.
+**Active research (R49)**: fixes early-training green tint at its verified root
+(residual shortcut copies the green input; EMA cold-start) and the mid-training
+PSNR crash (unanchored illumination scale). See [docs/COLOR_SHIFT_ROOT_CAUSE.md](docs/COLOR_SHIFT_ROOT_CAUSE.md).
 
 ## Project Structure
 
@@ -38,24 +37,29 @@ ECAFormer_ISB/
 │   ├── models/
 │   │   ├── archs/ECAFormer_ISB_arch.py  # Main architecture
 │   │   └── image_isb_model.py           # Training loop
-├── Options/                    # Experiment configs (R11-R43 series)
+├── Options/                    # Experiment configs (R11-R49 series)
 ├── diagnostic_scripts/         # Training stability analysis tools
 ├── legacy_training_scripts/    # Historical training scripts (R11-R43)
 ├── tools/                      # Checkpoint diagnosis, inference
 ├── docs/                       # Documentation
 │   ├── QUICKSTART.md          # Installation & training guide
-│   └── ARCHITECTURE.md        # Design details & findings
+│   ├── ARCHITECTURE.md        # Design details & findings
+│   └── COLOR_SHIFT_ROOT_CAUSE.md  # Verified green-tint root cause
 ├── CLAUDE.md                   # Project conventions for AI
 └── README.md                   # This file
 ```
 
-## Key Findings (2026-06-08)
+## Key Findings (2026-07-10)
 
-**Training instability pattern (R38c, R43a)**: PSNR drops at 3500-6000 iterations
+**Early green tint (verified root cause)**: the output residual shortcut
+`out = mapping + 0.6*x1` makes early outputs a copy of the green-biased
+low-light input; EMA cold-start (validation uses `net_g_ema`, ~61% random init
+at iter 500) delays visible progress by 1-2K iters. Fixed in R49 via
+`residual_gray_world` + `ema_warmup`.
 
-**Root cause**: Early-stage channel imbalance (identity_scale/channel_scale) → AdaLN learns compensatory modulation → Gradient conflict when learning rate transitions
-
-**Solution**: Apply channel correction at denoiser **output** (residual_scale) rather than x1 construction or illumination map
+**Mid-training PSNR crash**: PSNR drops 3+ dB while SSIM/LPIPS keep improving =
+global brightness/color drift from unanchored illumination scale. Fixed in R49
+via `anchor_loss_weight` (pins bridge-endpoint channel means to GT).
 
 ## Architecture
 
@@ -82,13 +86,14 @@ ECAFormer_ISB/
 
 ## Experiments
 
-**Active research**: R43a-warmup diagnostic (testing identity_scale warmup hypothesis)
+**Active research**: R49 series (green root fix + drift anchor, on R48b champion)
 
-**Stable baseline**: R42a with per-channel residual_scale
+**Champion**: R48b (PSNR 22.21, SSIM 0.7959) — `channel_noise_scale` on bridge noise
 
-**Historical**: 33 experiments (R11-R43) archived in `legacy_training_scripts/`
+**Historical**: R11-R48 archived in `legacy_training_scripts/` and `Options/`
 
-Training logs and checkpoints: `experiments/<config-name>/`
+Training logs and checkpoints: `experiments/<config-name>/` (disk-safe: single
+`latest.state` + `net_g_latest.pth`, images only for baseline & best)
 
 ## License
 
