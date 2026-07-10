@@ -9,6 +9,7 @@ import glob
 from basicsr.models.archs import define_network
 from basicsr.models.base_model import BaseModel
 from basicsr.utils import get_root_logger, imwrite, tensor2img
+from basicsr.utils.dist_util import master_only
 
 loss_module = importlib.import_module('basicsr.models.losses')
 metric_module = importlib.import_module('basicsr.metrics')
@@ -297,6 +298,11 @@ class ImageCleanModel(BaseModel):
         metric_gt_min = float('inf')
         metric_gt_max = float('-inf')
 
+        # Cache rendered uint8 images for a possible "best" dump from train.py.
+        # self.output/self.gt/self.lq are deleted mid-loop, so we must stash the
+        # already-rendered sr_img/gt_img here rather than re-deriving them later.
+        self._val_visual_cache = {}
+
         for idx, val_data in enumerate(dataloader):
             img_name = osp.splitext(osp.basename(val_data['lq_path'][0]))[0]
             self.feed_data(val_data)
@@ -326,53 +332,48 @@ class ImageCleanModel(BaseModel):
             del self.output
             torch.cuda.empty_cache()
 
-            if save_img:
-                # Smart image saving: only save key stages to reduce disk usage
-                # - Early stage: first 3 validations (500, 1000, 1500)
-                # - Best stage: tracked by best_metric_iter
-                # - Final stage: last validation
-                should_save = False
+            # Cache the rendered images so train.py can dump them to
+            # visualization/best_results/ if this validation turns out to be a
+            # new best — without re-running inference.
+            if self.opt['is_train']:
+                self._val_visual_cache[img_name] = (sr_img, gt_img)
 
+            # ----------------------------------------------------------------
+            # Disk image saving policy (disk-space safe):
+            #   * Training (is_train): memory-only by default. We write to disk
+            #     ONLY for the one-time baseline dump (first validation), via the
+            #     self._dump_baseline flag set by train.py. New-best dumps are
+            #     handled separately by dump_best_visuals() (called from train.py).
+            #   * Testing: always save (that's the whole point of a test run).
+            # The legacy `save_img` config flag is intentionally ignored during
+            # training so a stale `save_img: true` can't refill the disk.
+            # ----------------------------------------------------------------
+            if self.opt['is_train']:
+                should_save = bool(getattr(self, '_dump_baseline', False))
+            else:
+                should_save = bool(save_img)
+
+            if should_save:
                 if self.opt['is_train']:
-                    val_freq = self.opt['val'].get('val_freq', 5000)
-                    total_iter = self.opt['train'].get('total_iter', 200000)
-
-                    # Early stage: first 3 validations
-                    if current_iter <= val_freq * 3:
-                        should_save = True
-                    # Best metric stage: save if this might be best
-                    # (we save all, then clean up non-best later via a separate script if needed)
-                    elif hasattr(self, 'best_metric_results'):
-                        should_save = True
-                    # Final stage: last 2 validations
-                    elif current_iter >= total_iter - val_freq * 2:
-                        should_save = True
+                    # One-time baseline snapshot of the initial qualitative state.
+                    save_img_path = osp.join(self.opt['path']['visualization'],
+                                             'baseline',
+                                             f'{img_name}.png')
+                    save_gt_img_path = osp.join(self.opt['path']['visualization'],
+                                                'baseline',
+                                                f'{img_name}_gt.png')
                 else:
-                    # Always save during testing
-                    should_save = True
 
-                if should_save:
-                    if self.opt['is_train']:
+                    save_img_path = osp.join(
+                        self.opt['path']['visualization'], dataset_name,
+                        f'{img_name}.png')
+                    save_gt_img_path = osp.join(
+                        self.opt['path']['visualization'], dataset_name,
+                        f'{img_name}_gt.png')
 
-                        save_img_path = osp.join(self.opt['path']['visualization'],
-                                                 img_name,
-                                                 f'{img_name}_{current_iter}.png')
-
-                        save_gt_img_path = osp.join(self.opt['path']['visualization'],
-                                                    img_name,
-                                                    f'{img_name}_{current_iter}_gt.png')
-                    else:
-
-                        save_img_path = osp.join(
-                            self.opt['path']['visualization'], dataset_name,
-                            f'{img_name}.png')
-                        save_gt_img_path = osp.join(
-                            self.opt['path']['visualization'], dataset_name,
-                            f'{img_name}_gt.png')
-
-                    imwrite(sr_img, save_img_path)
-                    if gt_img is not None:
-                        imwrite(gt_img, save_gt_img_path)
+                imwrite(sr_img, save_img_path)
+                if gt_img is not None:
+                    imwrite(gt_img, save_gt_img_path)
 
             if with_metrics:
                 if gt_metric is None:
@@ -400,6 +401,10 @@ class ImageCleanModel(BaseModel):
                         self.metric_distributions[name].append(float(metric_value))
 
             cnt += 1
+
+        # The one-time baseline dump (if requested) has now happened; clear the
+        # flag so subsequent validations stay memory-only.
+        self._dump_baseline = False
 
         if cnt > 0:
             self._val_audit_stats = {
@@ -460,14 +465,50 @@ class ImageCleanModel(BaseModel):
             out_dict['gt'] = self.gt.detach().cpu()
         return out_dict
 
+    @master_only
+    def dump_best_visuals(self, current_iter):
+        """Dump the most recent validation's rendered images as the new best.
+
+        Called from train.py only when a new best PSNR is achieved. Writes the
+        images cached during the last nondist_validation() into
+        visualization/best_results/, after clearing any previous best images so
+        they never accumulate on disk.
+        """
+        cache = getattr(self, '_val_visual_cache', None)
+        if not cache:
+            return
+        best_dir = osp.join(self.opt['path']['visualization'], 'best_results')
+        # Clear prior best visuals so only the current optimum is kept on disk.
+        if osp.isdir(best_dir):
+            for old_file in glob.glob(osp.join(best_dir, '*.png')):
+                try:
+                    os.remove(old_file)
+                except OSError:
+                    pass
+        else:
+            os.makedirs(best_dir, exist_ok=True)
+        for img_name, (sr_img, gt_img) in cache.items():
+            imwrite(sr_img, osp.join(best_dir, f'{img_name}.png'))
+            if gt_img is not None:
+                imwrite(gt_img, osp.join(best_dir, f'{img_name}_gt.png'))
+        logger = get_root_logger()
+        logger.info(
+            f'Best visuals updated at iter {current_iter} '
+            f'({len(cache)} images) -> {best_dir}')
+
     def save(self, epoch, current_iter, **kwargs):
+        # Disk-space safe: always overwrite a single `net_g_latest.pth` for the
+        # running checkpoint (-1 -> save_network names it 'latest') instead of
+        # accumulating per-iteration `net_g_{iter}.pth` files. The true iter is
+        # preserved inside the training state (state['iter']). Best-metric
+        # checkpoints (save_best) are separate and keep their own filenames.
         if self.ema_decay > 0:
             self.save_network([self.net_g, self.net_g_ema],
                               'net_g',
-                              current_iter,
+                              -1,
                               param_key=['params', 'params_ema'])
         else:
-            self.save_network(self.net_g, 'net_g', current_iter)
+            self.save_network(self.net_g, 'net_g', -1)
         self.save_training_state(epoch, current_iter, **kwargs)
 
     def save_best(self, best_metric, param_key='params', metric_key='psnr'):

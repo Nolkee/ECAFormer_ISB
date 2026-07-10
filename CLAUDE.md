@@ -52,7 +52,8 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 ## Config Conventions
 
 - `total_iter: 24000`, `batch_size_per_gpu: 24`, `gt_size: 128`, `lr: 6e-5`
-- `val_freq: 500`, `save_checkpoint_freq: 500`, `print_freq: 200`
+- `val_freq: 500` (fine-grained metric tracking), `save_checkpoint_freq: 2000`, `print_freq: 1000`
+- `save_img: false` — selective image saving is handled in code, not by this flag
 - `early_stop_patience_val: 8`, `use_amp: true`, `grad_clip_value: 0.02`
 - All losses: Charbonnier pixel + VGG perceptual + color + chroma + TV
 
@@ -92,7 +93,10 @@ bash diagnostic_scripts/run_all_diagnostic_experiments.sh  # Full suite
 - **Backward compatibility**: `base_model.py` auto-fills missing `identity_scale` keys with [1,1,1] for old checkpoints
 - **LOLv2Real paths**: Use `Train/Low` and `Train/Normal` (not `input`/`target`)
 - **NaN guard**: `nan_guard: true` in config skips optimizer steps on non-finite gradients (expected behavior)
-- **Smart image saving**: Validation only saves images at early stage (first 3), near best, and final stage (last 2) to reduce disk usage
+- **Disk-space safety** (added 2026-06-23 after /dev/sda2 filled up):
+  - Training states: single overwrite-only `training_states/latest.state` (atomic tmp+replace). Legacy numeric `{iter}.state` files still resumable.
+  - Running weights: single overwrite-only `models/net_g_latest.pth`. Best checkpoints (`best_psnr_*.pth` etc., weights-only) unchanged.
+  - Validation images: memory-only metrics by default. Disk writes ONLY for one-time `visualization/baseline/` dump (first validation) and `visualization/best_results/` (overwritten on each new best PSNR). The `save_img` config flag is ignored during training.
 
 ## Deep Dive Documentation
 

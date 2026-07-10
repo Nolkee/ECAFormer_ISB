@@ -183,8 +183,17 @@ def check_resume(opt, resume_iter):
             basename = network.replace('network_', '')
             if opt['path'].get('ignore_resume_networks') is None or (
                     basename not in opt['path']['ignore_resume_networks']):
-                opt['path'][name] = osp.join(
+                # Disk-space safe: running weights are overwritten into a single
+                # `net_{basename}_latest.pth` (see image_restoration_model.save).
+                # Prefer it; fall back to the legacy per-iter filename.
+                iter_path = osp.join(
                     opt['path']['models'], f'net_{basename}_{resume_iter}.pth')
+                latest_path = osp.join(
+                    opt['path']['models'], f'net_{basename}_latest.pth')
+                if osp.isfile(latest_path) and not osp.isfile(iter_path):
+                    opt['path'][name] = latest_path
+                else:
+                    opt['path'][name] = iter_path
                 logger.info(f"Set {name} to {opt['path'][name]}")
 
 

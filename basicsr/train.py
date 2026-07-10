@@ -173,20 +173,27 @@ def main():
     # automatic resume ..
     state_folder_path = 'experiments/{}/training_states/'.format(opt['name']) #状态路径
     import os
-    try:
-        all_files = os.listdir(state_folder_path)
-        states = [
-            x for x in all_files
-            if x.endswith('.state') and x[:-6].isdigit()
-        ]
-    except Exception:
-        states = []
-
+    # Disk-space safe: a single overwrite-only `latest.state` is maintained
+    # (see base_model.save_training_state). Prefer it; fall back to legacy
+    # numeric `{iter}.state` files for backward compatibility with old runs.
     resume_state = None
-    if len(states) > 0: #如果路径已存在
-        max_state_file = '{}.state'.format(max([int(x[0:-6]) for x in states]))
-        resume_state = os.path.join(state_folder_path, max_state_file)
+    latest_state_path = os.path.join(state_folder_path, 'latest.state')
+    if os.path.isfile(latest_state_path):
+        resume_state = latest_state_path
         opt['path']['resume_state'] = resume_state
+    else:
+        try:
+            all_files = os.listdir(state_folder_path)
+            states = [
+                x for x in all_files
+                if x.endswith('.state') and x[:-6].isdigit()
+            ]
+        except Exception:
+            states = []
+        if len(states) > 0: #如果路径已存在
+            max_state_file = '{}.state'.format(max([int(x[0:-6]) for x in states]))
+            resume_state = os.path.join(state_folder_path, max_state_file)
+            opt['path']['resume_state'] = resume_state
 
     # load resume states if necessary，resume_state是重新训练的时候接上的吗？
     if opt['path'].get('resume_state'):
@@ -246,6 +253,9 @@ def main():
 
     # create message logger (formatted outputs)
     msg_logger = MessageLogger(opt, current_iter, tb_logger)
+
+    # Disk-space safe: track whether the one-time baseline image dump has run.
+    baseline_done = False
 
     # dataloader prefetcher
     prefetch_mode = opt['datasets']['train'].get('prefetch_mode')
@@ -385,6 +395,12 @@ def main():
                 rgb2bgr = opt['val'].get('rgb2bgr', True)
                 # wheather use uint8 image to compute metrics
                 use_image = opt['val'].get('use_image', True)
+                # Disk-space safe: validation is memory-only by default. Request a
+                # one-time baseline image dump on the very first validation so the
+                # initial qualitative state is recorded once.
+                if not baseline_done:
+                    model._dump_baseline = True
+                    baseline_done = True
                 current_metric = model.validation(val_loader, current_iter, tb_logger,
                                                   opt['val']['save_img'], rgb2bgr, use_image)
                 # log current metrics to csv file
@@ -434,6 +450,10 @@ def main():
                             if metric_name in metric_results:
                                 best_metric[metric_name] = metric_results[metric_name]
                     model.save_best(best_metric)
+                    # Disk-space safe: dump the current val visuals as the new best
+                    # (overwrites prior best images so they never accumulate).
+                    if hasattr(model, 'dump_best_visuals'):
+                        model.dump_best_visuals(current_iter)
                     no_improve_val_count = 0
                 else:
                     if early_stop_patience > 0:

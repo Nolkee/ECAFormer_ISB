@@ -128,7 +128,7 @@ train:
 val:
   window_size: 4
   val_freq: !!float 500
-  save_img: true
+  save_img: false  # disk-safe: code saves baseline once + best_results overwrite only
   rgb2bgr: true
   use_image: false
   max_minibatch: 8
@@ -149,8 +149,8 @@ val:
       use_gpu: true
 
 logger:
-  print_freq: 200
-  save_checkpoint_freq: !!float 500
+  print_freq: 1000
+  save_checkpoint_freq: !!float 2000
   use_tb_logger: true
   wandb:
     project: low_light_isb

@@ -245,7 +245,11 @@ class BaseModel():
                 state_dict[key] = param.cpu()
             save_dict[param_key_] = state_dict
 
-        torch.save(save_dict, save_path)
+        # Write-to-tmp + atomic replace so the overwrite-only `net_g_latest.pth`
+        # can never be corrupted by a mid-write crash (e.g. disk full).
+        tmp_path = save_path + '.tmp'
+        torch.save(save_dict, tmp_path)
+        os.replace(tmp_path, save_path)
 
     def _print_different_keys_loading(self, crt_net, load_net, strict=True):
         """Print keys with differnet name or different size when loading models.
@@ -365,10 +369,18 @@ class BaseModel():
             state['best_metric'] = kwargs['best_metric']
             if self.opt['is_train'] and self.opt.get('use_amp', False):
                 state['amp_scaler'] = self.amp_scaler.state_dict()
-            save_filename = f'{current_iter}.state'
+            # Disk-space safe: keep ONE running state that is overwritten every
+            # save, instead of accumulating sequential `{iter}.state` files
+            # (each bundles optimizer+scheduler+AMP and can be GBs). The actual
+            # iteration is stored inside `state['iter']`, so resume is unaffected.
+            # Write-to-tmp + atomic replace: if the disk fills or the process
+            # dies mid-write, the previous latest.state survives intact.
+            save_filename = 'latest.state'
             save_path = os.path.join(self.opt['path']['training_states'],
                                      save_filename)
-            torch.save(state, save_path)
+            tmp_path = save_path + '.tmp'
+            torch.save(state, tmp_path)
+            os.replace(tmp_path, save_path)
 
     def resume_training(self, resume_state):
         """Reload the optimizers and schedulers for resumed training.
