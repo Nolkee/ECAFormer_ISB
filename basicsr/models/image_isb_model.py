@@ -61,6 +61,11 @@ class ImageISBModel(ImageCleanModel):
         self.color_loss_weight = float(train_opt.get('color_loss_weight', 0.0))
         self.chroma_loss_weight = float(train_opt.get('chroma_loss_weight', 0.0))
         self.green_loss_weight = float(train_opt.get('green_loss_weight', 0.0))
+        # R49 (S1): anchor the bridge endpoint x1's per-channel means to the GT.
+        # Without it nothing constrains illu_map scale, so the estimator can
+        # drift the whole bridge distribution mid-training (the 7-9.5K PSNR
+        # crash where SSIM/LPIPS stay fine = global brightness/color drift).
+        self.anchor_loss_weight = float(train_opt.get('anchor_loss_weight', 0.0))
         self.x0_loss_type = str(train_opt.get('x0_loss_type', 'mse')).lower()
         self.x0_charbonnier_eps = float(train_opt.get('x0_charbonnier_eps', 1e-3))
         self.accumulate_steps = int(train_opt.get('accumulate_steps', 1))
@@ -417,17 +422,28 @@ class ImageISBModel(ImageCleanModel):
             l_green = green_excess.mean()
         loss_dict['l_green'] = l_green
 
+        # Anchor loss (R49/S1): pin per-channel means of the bridge endpoint
+        # x1 to the GT so the estimator cannot drift the bridge distribution.
+        # x1 is reconstructed as x_low * illu_map + x_low, which matches the
+        # network's construction when identity_scale=[1,1,1] and
+        # pre_denoiser_x1_clamp=false (the R49 configs).
+        l_anchor = torch.tensor(0.0, device=predicted_x0_for_loss.device)
+        if self.anchor_loss_weight > 0:
+            x1_recon = self.lq * illu_map + self.lq
+            l_anchor = F.l1_loss(x1_recon.mean(dim=(2, 3)), gt.mean(dim=(2, 3)))
+        loss_dict['l_anchor'] = l_anchor
+
         # FFT loss: frequency domain constraint
         l_fft = torch.tensor(0.0, device=predicted_x0_for_loss.device)
         if self.cri_fft is not None:
             l_fft = self.cri_fft(predicted_x0_for_loss, gt)
         loss_dict['l_fft'] = l_fft
 
-        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color + chroma + green + FFT
+        # Combined loss: bridge_weight * (x0 + pixel) + perceptual + TV + color + chroma + green + anchor + FFT
         l_total = self.bridge_weight * (
             self.x0_loss_weight * l_x0
             + self.pixel_loss_weight * l_pix
-        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color + self.chroma_loss_weight * l_chroma + self.green_loss_weight * l_green + self.fft_loss_weight * l_fft
+        ) + l_percep + self.tv_loss_weight * l_tv + self.color_loss_weight * l_color + self.chroma_loss_weight * l_chroma + self.green_loss_weight * l_green + self.anchor_loss_weight * l_anchor + self.fft_loss_weight * l_fft
         if self.nan_guard and self._has_nonfinite_tensor(l_total):
             logger.warning(
                 f'Non-finite total loss at iter {current_iter}, skipping optimizer step. '
@@ -470,7 +486,12 @@ class ImageISBModel(ImageCleanModel):
         self.log_dict = {'l_total': l_total.item()}
 
         if self.ema_decay > 0:
-            self.model_ema(decay=self.ema_decay)
+            decay = self.ema_decay
+            if self.ema_warmup:
+                # R49 (G1): warmup so early validation reflects the live net;
+                # converges to ema_decay after ~10/(1-ema_decay) iters.
+                decay = min(self.ema_decay, (1 + current_iter) / (10 + current_iter))
+            self.model_ema(decay=decay)
 
     def nonpad_test(self, img=None):
         """Inference: network returns enhanced image directly in eval mode.

@@ -361,13 +361,18 @@ class CrossAttenUnet_ISB(nn.Module):
                  use_out_norm=True, residual_scale_init=1.0,
                  learnable_residual_scale=False, mapping_bias=False,
                  zero_init_mapping_bias=False,
-                 use_eca=True, eca_gamma=2, eca_beta=1, adaln_init_scale=0.0):
+                 use_eca=True, eca_gamma=2, eca_beta=1, adaln_init_scale=0.0,
+                 residual_gray_world=False):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
 
         self.dim = dim
         self.level = level
+        # R49: gray-world white balance on the residual shortcut. Neutralizes
+        # the input's channel imbalance (LOLv1 green bias) that the raw x1
+        # passthrough would otherwise copy straight into early outputs.
+        self.residual_gray_world = bool(residual_gray_world)
 
         # Time embedding MLP
         time_dim = dim * 4
@@ -501,6 +506,21 @@ class CrossAttenUnet_ISB(nn.Module):
             if m.weight is not None:
                 nn.init.constant_(m.weight, 1.0)
 
+    @staticmethod
+    def _gray_world(x):
+        """Per-image gray-world white balance (train/inference identical).
+
+        Rescales each channel so its spatial mean equals the cross-channel
+        (gray) mean. Gains are detached — they act as per-image constants, so
+        gradients still flow through x itself but not through the statistics.
+        Gains are clamped to [0.5, 2.0] to avoid extreme amplification on
+        degenerate inputs.
+        """
+        ch_mean = x.mean(dim=(2, 3), keepdim=True)            # [B, 3, 1, 1]
+        gray = ch_mean.mean(dim=1, keepdim=True)              # [B, 1, 1, 1]
+        gain = (gray / ch_mean.clamp_min(1e-6)).clamp(0.5, 2.0).detach()
+        return x * gain
+
     def forward(self, x_t, x1, visual_fea, t_batch):
         """
         Predict clean x0 from noisy x_t.
@@ -539,7 +559,11 @@ class CrossAttenUnet_ISB(nn.Module):
         features = torch.cat([x, y], dim=1)
         if self.out_norm is not None:
             features = self.out_norm(features)
-        residual = self.residual_scale.to(dtype=x1.dtype) * x1
+        # R49: neutralize the input's channel imbalance in the shortcut so the
+        # early-training output (residual-dominated) is color-neutral instead
+        # of a copy of the green-biased low-light input.
+        x1_res = self._gray_world(x1) if self.residual_gray_world else x1
+        residual = self.residual_scale.to(dtype=x1.dtype) * x1_res
         out = self.mapping(features) + residual
         if self.post_norm is not None:
             out = self.post_norm(out)
@@ -579,7 +603,7 @@ class ECAFormerISB(nn.Module):
                  green_norm=False, channel_permute_prob=0.0,
                  identity_scale_init=None, learnable_identity_scale=False,
                  identity_scale_warmup_iters=0, adaln_init_scale=0.0,
-                 channel_noise_scale=None, **kwargs):
+                 channel_noise_scale=None, residual_gray_world=False, **kwargs):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -702,6 +726,7 @@ class ECAFormerISB(nn.Module):
                     zero_init_mapping_bias=zero_init_mapping_bias,
                     use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
                     adaln_init_scale=float(adaln_init_scale),
+                    residual_gray_world=residual_gray_world,
                 )
             elif self.cond_type == "none":
                 # No time conditioning — plain CrossAttenUnet wrapped

@@ -109,6 +109,11 @@ class ImageCleanModel(BaseModel):
             )
 
         self.ema_decay = train_opt.get('ema_decay', 0)
+        # R49 (G1): EMA warmup — early in training the EMA tracks the live net
+        # (decay ~= t/(t+10)) and converges to ema_decay. Without it, with a
+        # constant 0.999 the EMA net is still ~61% random init at iter 500, so
+        # early validation images lag the live net by 1-2K iters.
+        self.ema_warmup = bool(train_opt.get('ema_warmup', False))
         if self.ema_decay > 0:
             logger = get_root_logger()
             logger.info(
@@ -227,7 +232,10 @@ class ImageCleanModel(BaseModel):
         self.log_dict = self.reduce_loss_dict(loss_dict)
 
         if self.ema_decay > 0:
-            self.model_ema(decay=self.ema_decay)
+            decay = self.ema_decay
+            if self.ema_warmup:
+                decay = min(self.ema_decay, (1 + current_iter) / (10 + current_iter))
+            self.model_ema(decay=decay)
 
     def pad_test(self, window_size):
         scale = self.opt.get('scale', 1)
