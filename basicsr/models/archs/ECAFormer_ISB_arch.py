@@ -362,7 +362,8 @@ class CrossAttenUnet_ISB(nn.Module):
                  learnable_residual_scale=False, mapping_bias=False,
                  zero_init_mapping_bias=False,
                  use_eca=True, eca_gamma=2, eca_beta=1, adaln_init_scale=0.0,
-                 residual_gray_world=False):
+                 residual_gray_world=False,
+                 gray_world_decay_start=0, gray_world_decay_end=0):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -372,7 +373,11 @@ class CrossAttenUnet_ISB(nn.Module):
         # R49: gray-world white balance on the residual shortcut. Neutralizes
         # the input's channel imbalance (LOLv1 green bias) that the raw x1
         # passthrough would otherwise copy straight into early outputs.
+        # R50: optionally decay the WB blend 1->0 over [start, end] iters so
+        # the residual recovers its natural color cast after the early phase.
         self.residual_gray_world = bool(residual_gray_world)
+        self.gray_world_decay_start = int(gray_world_decay_start)
+        self.gray_world_decay_end = int(gray_world_decay_end)
 
         # Time embedding MLP
         time_dim = dim * 4
@@ -521,6 +526,27 @@ class CrossAttenUnet_ISB(nn.Module):
         gain = (gray / ch_mean.clamp_min(1e-6)).clamp(0.5, 2.0).detach()
         return x * gain
 
+    def _gray_world_lambda(self):
+        """R50: blend weight for the gray-world residual (1=full WB, 0=raw x1).
+
+        A pure function of `_current_iter` (propagated from the training loop),
+        so it is identical in train and inference at the same iter. When the
+        iter is unset (-1, i.e. deployment inference), returns the TERMINAL
+        (post-decay) weight — the converged training state — to satisfy the
+        train/inference-consistency rule. end<=0 keeps the R49 always-on WB.
+        """
+        if self.gray_world_decay_end <= 0:
+            return 1.0  # R49 always-on
+        it = getattr(self, '_current_iter', -1)
+        if it < 0:
+            it = self.gray_world_decay_end  # inference -> terminal state
+        if it <= self.gray_world_decay_start:
+            return 1.0
+        if it >= self.gray_world_decay_end:
+            return 0.0
+        span = self.gray_world_decay_end - self.gray_world_decay_start
+        return 1.0 - float(it - self.gray_world_decay_start) / span
+
     def forward(self, x_t, x1, visual_fea, t_batch):
         """
         Predict clean x0 from noisy x_t.
@@ -562,7 +588,20 @@ class CrossAttenUnet_ISB(nn.Module):
         # R49: neutralize the input's channel imbalance in the shortcut so the
         # early-training output (residual-dominated) is color-neutral instead
         # of a copy of the green-biased low-light input.
-        x1_res = self._gray_world(x1) if self.residual_gray_world else x1
+        # R50: the WB blend decays 1->0 over the decay window so the residual
+        # recovers the image's own color cast once mapping has learned —
+        # permanent WB desaturated outputs and amplified drift (R49 lesson).
+        if self.residual_gray_world:
+            gw_lambda = self._gray_world_lambda()
+            self._gray_world_blend = gw_lambda  # exposed for logging
+            if gw_lambda >= 1.0:
+                x1_res = self._gray_world(x1)
+            elif gw_lambda <= 0.0:
+                x1_res = x1
+            else:
+                x1_res = gw_lambda * self._gray_world(x1) + (1.0 - gw_lambda) * x1
+        else:
+            x1_res = x1
         residual = self.residual_scale.to(dtype=x1.dtype) * x1_res
         out = self.mapping(features) + residual
         if self.post_norm is not None:
@@ -603,7 +642,8 @@ class ECAFormerISB(nn.Module):
                  green_norm=False, channel_permute_prob=0.0,
                  identity_scale_init=None, learnable_identity_scale=False,
                  identity_scale_warmup_iters=0, adaln_init_scale=0.0,
-                 channel_noise_scale=None, residual_gray_world=False, **kwargs):
+                 channel_noise_scale=None, residual_gray_world=False,
+                 gray_world_decay_start=0, gray_world_decay_end=0, **kwargs):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -634,6 +674,33 @@ class ECAFormerISB(nn.Module):
         self.green_norm = bool(green_norm)
         self.channel_permute_prob = float(channel_permute_prob)
         self.learnable_identity_scale = bool(learnable_identity_scale)
+        # R50: schedule the gray-world residual instead of keeping it forever.
+        # The green copy only exists while mapping~=0 (first ~2K iters); a
+        # permanent WB erases the residual's per-image color cast (R49
+        # desaturation) and its reciprocal gains amplify estimator drift
+        # (earlier mid-training crash). Blend 1->0 over [start, end] iters;
+        # end<=0 keeps the R49 always-on behavior.
+        self.residual_gray_world = bool(residual_gray_world)
+        self.gray_world_decay_start = int(gray_world_decay_start)
+        self.gray_world_decay_end = int(gray_world_decay_end)
+        if self.gray_world_decay_end > 0:
+            if not self.residual_gray_world:
+                raise ValueError(
+                    "ECAFormerISB: gray_world_decay_end requires "
+                    "residual_gray_world=true."
+                )
+            if not 0 <= self.gray_world_decay_start < self.gray_world_decay_end:
+                raise ValueError(
+                    f"ECAFormerISB: invalid gray-world decay window "
+                    f"[{self.gray_world_decay_start}, {self.gray_world_decay_end}]. "
+                    "Expected 0 <= start < end."
+                )
+        elif self.gray_world_decay_start > 0:
+            raise ValueError(
+                f"ECAFormerISB: gray_world_decay_start={self.gray_world_decay_start} "
+                "was set but gray_world_decay_end is unset/0 — the decay would be "
+                "silently disabled (permanent WB). Set gray_world_decay_end > start."
+            )
         if not 0.0 <= self.self_cond_prob <= 1.0:
             raise ValueError(
                 f"ECAFormerISB: self_cond_prob={self.self_cond_prob} is invalid. "
@@ -727,6 +794,8 @@ class ECAFormerISB(nn.Module):
                     use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
                     adaln_init_scale=float(adaln_init_scale),
                     residual_gray_world=residual_gray_world,
+                    gray_world_decay_start=self.gray_world_decay_start,
+                    gray_world_decay_end=self.gray_world_decay_end,
                 )
             elif self.cond_type == "none":
                 # No time conditioning — plain CrossAttenUnet wrapped
@@ -817,6 +886,11 @@ class ECAFormerISB(nn.Module):
         if self.pre_denoiser_x1_clamp:
             x1 = torch.clamp(x1, 0.0, 1.0)
         bridge_base = self._get_bridge_base(x_low, x1)
+
+        # R50: propagate training-iter context to the denoiser so the
+        # gray-world residual decay sees the same iter in train and val
+        # (-1 = no context = deployment inference -> terminal blend).
+        self.denoiser._current_iter = getattr(self, '_current_iter', -1)
 
         if not self.use_sb:
             output = self.denoiser(x1, visual_fea)

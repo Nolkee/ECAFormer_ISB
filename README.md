@@ -25,9 +25,12 @@ python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweigh
 **Result**: PSNR 22.21 @ 11.5K iter (SSIM 0.7959, LPIPS 0.164)
 **Key**: 3-channel illumination + per-channel bridge noise `channel_noise_scale=[1.0, 0.8, 1.0]`
 
-**Active research (R49)**: fixes early-training green tint at its verified root
-(residual shortcut copies the green input; EMA cold-start) and the mid-training
-PSNR crash (unanchored illumination scale). See [docs/COLOR_SHIFT_ROOT_CAUSE.md](docs/COLOR_SHIFT_ROOT_CAUSE.md).
+**Active research (R50)**: R49's gray-world residual fixed the early green tint
+but desaturated converged outputs and moved the mid-training PSNR crash earlier;
+its anchor-to-GT loss proved mathematically inert (sigmoid caps x1 far below the
+GT target on 100% of LOLv1). R50 decays the gray-world blend to zero over iters
+1500-3500, slows the estimator (`estimator_lr_mult`), and anchors to a reachable
+target (`anchor_mode: x1_lq`). See [docs/COLOR_SHIFT_ROOT_CAUSE.md](docs/COLOR_SHIFT_ROOT_CAUSE.md).
 
 ## Project Structure
 
@@ -37,7 +40,7 @@ ECAFormer_ISB/
 │   ├── models/
 │   │   ├── archs/ECAFormer_ISB_arch.py  # Main architecture
 │   │   └── image_isb_model.py           # Training loop
-├── Options/                    # Experiment configs (R11-R49 series)
+├── Options/                    # Experiment configs (R11-R50 series)
 ├── diagnostic_scripts/         # Training stability analysis tools
 ├── legacy_training_scripts/    # Historical training scripts (R11-R43)
 ├── tools/                      # Checkpoint diagnosis, inference
@@ -86,11 +89,11 @@ via `anchor_loss_weight` (pins bridge-endpoint channel means to GT).
 
 ## Experiments
 
-**Active research**: R49 series (green root fix + drift anchor, on R48b champion)
+**Active research**: R50 series (gray-world decay + drift stabilizers, on R48b champion)
 
 **Champion**: R48b (PSNR 22.21, SSIM 0.7959) — `channel_noise_scale` on bridge noise
 
-**Historical**: R11-R48 archived in `legacy_training_scripts/` and `Options/`
+**Historical**: R11-R49 archived in `legacy_training_scripts/` and `Options/`
 
 Training logs and checkpoints: `experiments/<config-name>/` (disk-safe: single
 `latest.state` + `net_g_latest.pth`, images only for baseline & best)

@@ -48,20 +48,37 @@ NOT the illumination channel count (that theory was disproven by R47/R48).
 | `identity_scale=[1,0.92,1]` | x1 construction | Unstable everywhere tried (R43/R44/R48c) — abandoned |
 | `residual_scale=[0.6,0.5,0.6]` | Denoiser output | R42a: PSNR 21.64, stable but below champion |
 | `channel_noise_scale=[1,0.8,1]` | Bridge noise | **R48b champion: PSNR 22.21 / SSIM 0.7959** |
-| `residual_gray_world` | Residual shortcut | R49: neutralizes early green at the source |
+| `residual_gray_world` | Residual shortcut | R49: kills early green, but permanent WB desaturates + destabilizes |
+| `gray_world_decay_start/end` | Residual shortcut | R50: WB only while needed (blend 1->0 over 1500-3500) |
 
-### 3. R49 mechanisms (green-tint root fixes + drift anchor)
+### 3. R49 mechanisms (green-tint root fixes) and the R50 corrections
 
-Built on the R48b champion. All three are independently toggleable:
+Built on the R48b champion. R49 verdict (2026-07-14): green tint fixed, but two
+regressions — see `docs/COLOR_SHIFT_ROOT_CAUSE.md` for the full mechanism.
 
 - **`ema_warmup: true`** — EMA decay `min(ema_decay, (1+t)/(10+t))` so early
   validation (rendered from `net_g_ema`) reflects the live net instead of ~61%
-  random init at iter 500. Converges to `ema_decay`; final quality unaffected.
+  random init at iter 500. Converges to `ema_decay`. KEPT in R50.
 - **`residual_gray_world: true`** — per-image gray-world white balance on the
-  residual shortcut only. Gains detached, clamped [0.5, 2.0], **identical in
-  train and inference** (R45 lesson). Makes early output color-neutral.
-- **`anchor_loss_weight: 0.05`** — `L1(mean_c(x1), mean_c(gt))` pins the bridge
-  endpoint's per-channel means, eliminating the mid-training global-drift crash.
+  residual shortcut only. Gains detached, clamped [0.5, 2.0], identical in
+  train and inference. Fixed the green tint BUT permanent WB desaturated
+  converged outputs and amplified drift. R50 adds **`gray_world_decay_start:
+  1500` / `gray_world_decay_end: 3500`** (network_g keys): the WB blend decays
+  linearly to 0, restoring the residual's natural color cast after the
+  green-risk phase. Deployment inference uses the terminal blend (0).
+- **`anchor_loss_weight` with `anchor_mode: gt` (R49) — INERT**: x1 =
+  lq*(1+sigmoid) <= 2*lq, and 2*lq_gray (~0.09) << gt_gray (~0.49) on 100% of
+  LOLv1, so the loss was a saturated constant (r49b crashed identically to
+  r49a). R50 replaces it with **`anchor_mode: x1_lq`** + `anchor_target_ratio:
+  1.5` + weight 0.5: pins mean_c(x1) to the reachable midpoint 1.5*mean_c(lq),
+  a two-sided restoring force.
+- **`estimator_lr_mult: 0.3`** (R50, train key) — separate AdamW param group
+  for the estimator at 0.3x LR (warmup/cosine scale per group). Slows x1 drift
+  at the source so the denoiser/AdaLN can track it (crash fix A; the anchor is
+  fix B — r50b vs r50c compare them head-to-head).
+- **Observability** (R50): `log_dict` now carries every loss component plus
+  `x1_mean_r/g/b`, `gw_gain_r/g/b`, `gw_gain_clamp_frac`, `gw_blend` — the
+  drift is directly visible in TensorBoard during any crash window.
 
 ### 4. Training Configuration
 
@@ -79,10 +96,11 @@ output_activation: identity
 - Bridge loss = x0_loss (0.4) + pixel L1 (0.6), scaled by bridge_weight 1.0
 - VGG perceptual (0.1), color (channel-mean L1, 0.2), chroma (channel-std L1, 0.05)
 - TV on illu_map (0.002)
-- anchor (0.05, R49 only), green/fft (optional, off by default)
+- anchor (`anchor_mode: x1_lq`, weight 0.5, R50c only), green/fft (optional, off by default)
 
-**Optimizer**: AdamW, lr 6e-5, cosine annealing 24K iter, single param group
-(estimator + denoiser + scales share one LR).
+**Optimizer**: AdamW, lr 6e-5, cosine annealing 24K iter. Single param group
+by default; `estimator_lr_mult` (R50b: 0.3) splits the estimator into a second
+group at a lower LR (warmup and cosine scale per group).
 
 ## Data Flow (training)
 
@@ -101,7 +119,10 @@ output_activation: identity
 | R38c | channel_scale, illum=1 | 22.10 @ 10K | Green early, mid crash |
 | R42a | residual_scale per-ch | 21.64 @ 10.5K | Stable, below champion |
 | R48b | channel_noise_scale, illum=3 | **22.21 @ 11.5K** | **Champion** (SSIM 0.7959) |
-| R49a/b/c | + gray-world/anchor/zero-bias | running | Green root fix + crash fix |
+| R49a | + gray-world/ema_warmup | 22.20 @ 9K | Green FIXED; desaturated, crash earlier (6.5K) |
+| R49b | + anchor 0.05 (gt) | 21.94 @ 8.5K | Anchor inert — crash identical to R49a |
+| R49c | + zero_init_mapping_bias | 22.07 @ 9.5K | Worst valley (17.5 @ 6.5K) |
+| R50a/b/c | gw decay / +est_lr 0.3 / +anchor x1_lq | pending | Color restore + crash fixes |
 
 ## Checkpoint & Disk Policy
 
@@ -122,6 +143,8 @@ See `basicsr/models/base_model.py` and `image_restoration_model.py`.
 - ❌ `channel_scale < 0.90` — PSNR loss exceeds green fix benefit (R40)
 - ❌ `identity_scale` (any variant) — unstable everywhere tried (R43/R44/R48c)
 - ❌ `green_norm` in training mode only — train/val mismatch (R45)
+- ❌ `anchor_mode: gt` — target unreachable (sigmoid caps x1 at 2*lq << gt), loss is a saturated constant (R49b)
+- ❌ permanent `residual_gray_world` (no decay) — desaturates + destabilizes (R49); pair with `gray_world_decay_start/end`
 
 ## Inference
 
@@ -134,6 +157,6 @@ See `basicsr/models/base_model.py` and `image_restoration_model.py`.
 
 ---
 
-**Last updated**: 2026-07-10
+**Last updated**: 2026-07-14
 **Champion config**: R48b (`Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`)
-**Active research**: R49 series (green root fix + drift anchor)
+**Active research**: R50 series (gray-world decay + drift stabilizers)

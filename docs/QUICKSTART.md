@@ -58,10 +58,10 @@ python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweigh
 
 **Expected result**: PSNR ~22.2 @ 11.5K iter, SSIM ~0.796
 
-### Active research: R49 series (green fix + stability)
+### Active research: R50 series (color restore + crash fixes)
 
 ```bash
-bash train_r49_series.sh   # r49a (gray-world+ema_warmup) -> r49b (+anchor) -> r49c (+zero-bias)
+bash train_r50_series.sh   # r50a (gray-world decay) -> r50b (+estimator_lr 0.3x) -> r50c (+reachable anchor)
 ```
 
 Training auto-resumes from `experiments/<name>/training_states/latest.state` if present.
@@ -112,15 +112,18 @@ accumulate_steps: 2      # Maintain effective batch size
 
 ### Early images look green
 
-Expected for configs without the R49 fixes: early output is a copy of the
+Expected for configs without the R49/R50 fixes: early output is a copy of the
 green-biased input, and validation uses EMA weights that lag the live net.
-Use `residual_gray_world: true` + `ema_warmup: true` (R49 configs).
+Use `residual_gray_world: true` + `ema_warmup: true` + the R50 decay window
+(`gray_world_decay_start/end` — without it converged outputs desaturate).
 See `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 
 ### Mid-training PSNR drop (SSIM/LPIPS unaffected)
 
-Global brightness/color drift from unanchored illumination scale.
-Use `anchor_loss_weight: 0.05` (R49b/c configs).
+Global brightness/color drift: the estimator moves x1 (bridge endpoint) faster
+than the denoiser can track. Check `x1_mean_*` / `gw_*` curves in TensorBoard.
+Fixes: `estimator_lr_mult: 0.3` (r50b) or `anchor_mode: x1_lq` with weight 0.5
+(r50c). The R49 `anchor_loss_weight: 0.05` anchor-to-GT is inert — do not use.
 
 ### Disk fills up
 

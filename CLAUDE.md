@@ -17,9 +17,13 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 **Result**: PSNR 22.21 @ 11.5K (best SSIM 0.7959 @ 15.5K, LPIPS 0.1635)
 **Key params**: `illumination_channels=3`, `channel_noise_scale=[1.0, 0.8, 1.0]`, `residual_scale=0.6`, `color_loss=0.2`
 
-**Active research**: R49 series (`train_r49_series.sh`) — fixes early green tint
-(`residual_gray_world` + `ema_warmup`) and the mid-training PSNR crash
-(`anchor_loss_weight`). Root-cause analysis: `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
+**Active research**: R50 series (`train_r50_series.sh`) — fixes the two R49
+regressions. R49 killed the early green tint but permanent `residual_gray_world`
+(a) desaturated converged outputs (residual lost its per-image color cast) and
+(b) moved the mid-training PSNR crash EARLIER (5.5-7K). R50: decay the gray-world
+blend to 0 over iters 1500-3500 (`gray_world_decay_start/end`), slow the
+estimator (`estimator_lr_mult`), and use a REACHABLE anchor (`anchor_mode: x1_lq`).
+Root-cause analysis: `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 
 ## Config Conventions
 
@@ -49,6 +53,13 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
 - ❌ Do NOT revisit the "illumination_channels=1 causes green tint" theory — disproven
   by R47/R48 (3ch still green early). Verified root cause is the residual passthrough
   + EMA cold-start; see `docs/COLOR_SHIFT_ROOT_CAUSE.md`
+- ❌ `anchor_mode: gt` (anchor x1 means to GT means) — mathematically INERT on LOLv1:
+  x1 = lq·(1+sigmoid) ≤ 2·lq and 2·lq_gray (~0.09) << gt_gray (~0.49) on 100% of
+  images, so the loss is a saturated constant, not a restoring force (R49b confirmed:
+  identical crash with and without it). Use `anchor_mode: x1_lq` instead
+- ❌ Permanent (unscheduled) `residual_gray_world` — desaturates converged outputs and
+  amplifies estimator drift via detached reciprocal gains (R49 confirmed). Always pair
+  with `gray_world_decay_start/end`
 
 ## Rules
 
@@ -64,6 +75,17 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
 - **Backward compatibility**: `base_model.py` auto-fills missing `identity_scale` keys with [1,1,1] for old checkpoints
 - **LOLv2Real paths**: Use `Train/Low` and `Train/Normal` (not `input`/`target`)
 - **NaN guard**: `nan_guard: true` in config skips optimizer steps on non-finite gradients (expected behavior)
+- **R50 mechanism keys**: `gray_world_decay_start/end` live under `network_g` (arch
+  kwargs); `estimator_lr_mult`, `anchor_mode`, `anchor_target_ratio` live under `train`.
+  A key in the wrong section is silently ignored — the R50 code validates its own keys
+  (bad decay window / non-positive lr mult / unknown anchor_mode raise at init)
+- **Training logs**: since R50, `log_dict` carries every loss component plus drift
+  diagnostics (`x1_mean_r/g/b`, `gw_gain_r/g/b`, `gw_gain_clamp_frac`, `gw_blend`) to
+  TensorBoard — check these curves first when diagnosing a PSNR-only crash window
+- **`_current_iter` plumbing**: `optimize_parameters` sets it on both bare `net_g` and
+  `net_g_ema` every step; the arch propagates it to the denoiser. Deployment inference
+  (attr unset = -1) uses the TERMINAL schedule state — scheduled mechanisms must
+  converge to their final value before `total_iter`
 - **Disk-space safety** (added 2026-06-23 after /dev/sda2 filled up):
   - Training states: single overwrite-only `training_states/latest.state` (atomic tmp+replace). Legacy numeric `{iter}.state` files still resumable.
   - Running weights: single overwrite-only `models/net_g_latest.pth`. Best checkpoints (`best_psnr_*.pth` etc., weights-only) unchanged.

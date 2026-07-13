@@ -159,22 +159,56 @@ class ImageCleanModel(BaseModel):
 
     def setup_optimizers(self):
         train_opt = self.opt['train']
-        optim_params = []
+        logger = get_root_logger()
 
+        # R50: optionally train the illumination estimator at a lower LR.
+        # x1 (bridge endpoint + residual base) drifts with the estimator; a
+        # slower estimator lets the denoiser/AdaLN track it instead of
+        # transiently mismatching (the mid-training PSNR-only crash).
+        estimator_lr_mult = float(train_opt.get('estimator_lr_mult', 1.0))
+        if estimator_lr_mult <= 0:
+            raise ValueError(
+                f"estimator_lr_mult={estimator_lr_mult} is invalid. "
+                "Expected a positive multiplier (typically in (0, 1])."
+            )
+        base_params = []
+        estimator_params = []
         for k, v in self.net_g.named_parameters():
-            if v.requires_grad:
-                optim_params.append(v)
-            else:
-                logger = get_root_logger()
+            if not v.requires_grad:
                 logger.warning(f'Params {k} will not be optimized.')
+                continue
+            if estimator_lr_mult != 1.0 and 'estimator.' in k:
+                estimator_params.append(v)
+            else:
+                base_params.append(v)
+        if estimator_lr_mult != 1.0 and not estimator_params:
+            logger.warning(
+                f'estimator_lr_mult={estimator_lr_mult} was set but NO parameter '
+                "name contains 'estimator.' — the multiplier is being ignored and "
+                'all params train at the base LR. Check the network exposes an '
+                '`estimator` submodule.')
 
         optim_type = train_opt['optim_g'].pop('type')
+        optim_kwargs = train_opt['optim_g']
+        if estimator_params:
+            base_lr = float(optim_kwargs['lr'])
+            optim_params = [
+                {'params': base_params},
+                {'params': estimator_params, 'lr': base_lr * estimator_lr_mult},
+            ]
+            logger.info(
+                f'estimator_lr_mult={estimator_lr_mult}: '
+                f'{len(estimator_params)} estimator params at lr '
+                f'{base_lr * estimator_lr_mult:.2e}, '
+                f'{len(base_params)} params at base lr {base_lr:.2e}.')
+        else:
+            optim_params = base_params
         if optim_type == 'Adam':
             self.optimizer_g = torch.optim.Adam(
-                optim_params, **train_opt['optim_g'])
+                optim_params, **optim_kwargs)
         elif optim_type == 'AdamW':
             self.optimizer_g = torch.optim.AdamW(
-                optim_params, **train_opt['optim_g'])
+                optim_params, **optim_kwargs)
         else:
             raise NotImplementedError(
                 f'optimizer {optim_type} is not supperted yet.')

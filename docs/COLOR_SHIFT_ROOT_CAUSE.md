@@ -56,8 +56,41 @@ R19 配置用 `use_out_norm: false` —— 特征不归一化就过 mapping conv
 
 `x1_recon = x_low * illu_map + x_low` 与网络构造一致，仅在 `identity_scale=[1,1,1]` 且 `pre_denoiser_x1_clamp: false` 时精确（R49 配置满足）。
 
+## R49 实验裁决（2026-07-14）：绿修好了，但引入两个回归
+
+**成功**：iter-500 baseline 不再发绿（G1+G2 按预期工作）。
+
+**回归 1 — 收敛输出去饱和**：永久灰世界把残差的三通道空间均值强制拉平，
+残差永远携带零逐图色偏 DC；mapping 在 GroupNorm 之后，唯一图像无关 DC 来源是
+数据集常数的 conv bias，于是网络用"数据集平均色偏"近似每张图 → 彩色物体发灰。
+chroma loss（0.05，全图单标量 std）比像素项弱 ~65 倍，无力抵抗。
+
+**回归 2 — 崩溃提前（5.5-7K，R48b 是 7-9.5K）**：detach 的倒数增益
+`gain = gray/ch_mean`（ch_mean 仅 ~0.05-0.1）把 estimator 的微小均值漂移放大成
+残差基底大幅摆动；暗通道有效残差权重最高 1.2。`ema_warmup` 在崩溃窗口平滑常数
+612-779（R48b 为 1000），让谷底在验证曲线上显得更早更深（观测放大器）。
+
+**S1 锚定完全失效（关键发现）**：illu_map 过 sigmoid ⇒ `x1 = lq·(1+σ) ≤ 2·lq`，
+而 LOLv1 实测 `2·lq_gray≈0.09 ≪ gt_gray≈0.49`（100% 图片不可达）——损失是
+~0.42 的常数底，梯度单向且经 sigmoid 饱和，**不是恢复力**。r49a（无锚）与
+r49b（锚 0.05）崩溃曲线几乎一致即为实验证据。当时不可见的原因：loss_dict 是
+死代码，日志只有 l_total（R50 已修复，全部分量+漂移诊断进 TensorBoard）。
+
+## 解决方案 v2（R50 系列，2026-07-14）
+
+| 机制 | 配置项 | 作用 |
+|---|---|---|
+| **灰世界衰减调度** | `gray_world_decay_start: 1500` + `gray_world_decay_end: 3500`（network_g 段） | blend λ 从 1 线性降到 0：绿风险期全量 WB，3.5K 后残差恢复真实色彩先验（去饱和消失、倒数增益放大器退场）。同 iter 下 train/val 一致（`_current_iter` 同步到 net_g 与 net_g_ema）；部署推理（无 iter 上下文）自动用终态 λ=0 |
+| **estimator 慢学习率** | `estimator_lr_mult: 0.3`（train 段） | estimator 单独参数组按 0.3× 基础 LR（warmup/cosine 按组缩放），从源头减慢 x1 漂移速度，denoiser 能跟上 → 不崩 |
+| **可达锚定** | `anchor_loss_weight: 0.5` + `anchor_mode: x1_lq` + `anchor_target_ratio: 1.5`（train 段） | 钉 `mean_c(x1) → 1.5·mean_c(lq)`——x1 可达域 [lq, 2lq] 的中点，双向恢复力；权重 0.5 占总损失 ~10%（R49 的 0.05 只占 ~2% 且被裁剪淹没） |
+
+消融：r50a（仅调度）验证去饱和消失+崩溃退回 R48b 时间线；r50b（+慢 LR）与
+r50c（+可达锚）对照哪种稳定器根治 5.5-9.5K 谷底与 9K 后阴跌。
+
 ## 被推翻/放弃的方向（勿重试）
 
 - **illumination_channels=1 是根因** —— 推翻。3 通道（R47/R48）早期同样发绿。
 - **channel_scale / identity_scale / green_norm** —— 都是调"拷贝内部通道比例"，治标不治本；identity_scale 还在各处（R43/R44/R48c）触发不稳定。
 - **AdaLN 梯度冲突是崩溃根因** —— 修正为"illu_map 无锚定导致的全局漂移"（SSIM/LPIPS 不崩是判据）。
+- **锚定 x1 通道均值到 GT（`anchor_mode: gt`）** —— sigmoid 上限使目标 100% 不可达，损失为饱和常数（R49b 实证零效果）。锚定目标必须落在 x1 的可达域内。
+- **永久（无调度）灰世界残差** —— 去饱和 + 崩溃提前（R49 实证）。必须配 `gray_world_decay_start/end`。

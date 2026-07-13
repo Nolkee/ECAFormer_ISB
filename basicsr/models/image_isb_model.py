@@ -61,11 +61,31 @@ class ImageISBModel(ImageCleanModel):
         self.color_loss_weight = float(train_opt.get('color_loss_weight', 0.0))
         self.chroma_loss_weight = float(train_opt.get('chroma_loss_weight', 0.0))
         self.green_loss_weight = float(train_opt.get('green_loss_weight', 0.0))
-        # R49 (S1): anchor the bridge endpoint x1's per-channel means to the GT.
-        # Without it nothing constrains illu_map scale, so the estimator can
-        # drift the whole bridge distribution mid-training (the 7-9.5K PSNR
-        # crash where SSIM/LPIPS stay fine = global brightness/color drift).
+        # R49 (S1): anchor the bridge endpoint x1's per-channel means so the
+        # estimator cannot drift the whole bridge distribution mid-training
+        # (the PSNR-only crash where SSIM/LPIPS stay fine = global drift).
+        # anchor_mode:
+        #   'gt'    — legacy R49 target mean_c(gt). INERT on LOLv1: x1 =
+        #             lq*(1+sigmoid) <= 2*lq and 2*lq_gray (~0.09) << gt_gray
+        #             (~0.49) on 100% of images, so the loss is a constant
+        #             floor with a saturating one-sided gradient, not a
+        #             restoring force. Kept only for config compatibility.
+        #   'x1_lq' — R50 target ratio*mean_c(lq), the midpoint of x1's
+        #             reachable range (lq..2*lq for ratio 1.5): a two-sided
+        #             restoring force that pins the endpoint scale.
         self.anchor_loss_weight = float(train_opt.get('anchor_loss_weight', 0.0))
+        self.anchor_mode = str(train_opt.get('anchor_mode', 'gt')).lower()
+        self.anchor_target_ratio = float(train_opt.get('anchor_target_ratio', 1.5))
+        if self.anchor_mode not in ('gt', 'x1_lq'):
+            raise ValueError(
+                f"ImageISBModel: anchor_mode='{self.anchor_mode}' is invalid. "
+                "Supported values: 'gt', 'x1_lq'."
+            )
+        if not 1.0 <= self.anchor_target_ratio <= 2.0:
+            raise ValueError(
+                f"ImageISBModel: anchor_target_ratio={self.anchor_target_ratio} "
+                "is invalid. x1 = lq*(1+sigmoid) can only reach [1, 2]*lq."
+            )
         self.x0_loss_type = str(train_opt.get('x0_loss_type', 'mse')).lower()
         self.x0_charbonnier_eps = float(train_opt.get('x0_charbonnier_eps', 1e-3))
         self.accumulate_steps = int(train_opt.get('accumulate_steps', 1))
@@ -293,8 +313,12 @@ class ImageISBModel(ImageCleanModel):
         if (current_iter - 1) % self.accumulate_steps == 0:
             self.optimizer_g.zero_grad(set_to_none=True)
 
-        # Pass current_iter to network for identity_scale warmup
-        self.net_g._current_iter = current_iter
+        # Pass current_iter to the networks (identity_scale warmup, R50
+        # gray-world residual decay). net_g_ema renders validation, so it
+        # must see the same iter or train/val blends would diverge.
+        self.get_bare_model(self.net_g)._current_iter = current_iter
+        if hasattr(self, 'net_g_ema'):
+            self.net_g_ema._current_iter = current_iter
 
         with torch.amp.autocast('cuda', enabled=self.use_amp):
             preds = self.net_g(self.lq, self.gt)
@@ -423,14 +447,20 @@ class ImageISBModel(ImageCleanModel):
         loss_dict['l_green'] = l_green
 
         # Anchor loss (R49/S1): pin per-channel means of the bridge endpoint
-        # x1 to the GT so the estimator cannot drift the bridge distribution.
-        # x1 is reconstructed as x_low * illu_map + x_low, which matches the
+        # x1 so the estimator cannot drift the bridge distribution. x1 is
+        # reconstructed as x_low * illu_map + x_low, which matches the
         # network's construction when identity_scale=[1,1,1] and
-        # pre_denoiser_x1_clamp=false (the R49 configs).
+        # pre_denoiser_x1_clamp=false (the R49/R50 configs).
         l_anchor = torch.tensor(0.0, device=predicted_x0_for_loss.device)
         if self.anchor_loss_weight > 0:
             x1_recon = self.lq * illu_map + self.lq
-            l_anchor = F.l1_loss(x1_recon.mean(dim=(2, 3)), gt.mean(dim=(2, 3)))
+            x1_mean = x1_recon.mean(dim=(2, 3))
+            if self.anchor_mode == 'x1_lq':
+                # R50: reachable two-sided target = ratio * mean_c(lq).
+                target = self.anchor_target_ratio * self.lq.mean(dim=(2, 3))
+            else:
+                target = gt.mean(dim=(2, 3))  # legacy 'gt' (inert on LOLv1)
+            l_anchor = F.l1_loss(x1_mean, target)
         loss_dict['l_anchor'] = l_anchor
 
         # FFT loss: frequency domain constraint
@@ -483,7 +513,35 @@ class ImageISBModel(ImageCleanModel):
                 # Zero out gradients only after stepping
                 self.optimizer_g.zero_grad(set_to_none=True)
 
-        self.log_dict = {'l_total': l_total.item()}
+        # R50: log every loss component (loss_dict was previously dead code —
+        # r49b's inert anchor was invisible because only l_total was logged)
+        # plus drift diagnostics for the mid-training crash window: x1
+        # per-channel means, the gray-world gains they induce, and the
+        # current WB blend.
+        log_dict = OrderedDict()
+        for k, v in loss_dict.items():
+            log_dict[k] = v.item() if torch.is_tensor(v) else float(v)
+        with torch.no_grad():
+            x1_stat = (self.lq * illu_map + self.lq).float()
+            # Per-image stats, matching _gray_world's actual computation —
+            # batch-pooled means would hide per-crop clamp saturation.
+            ch_mean = x1_stat.mean(dim=(2, 3))                          # [B,3] RGB
+            gray = ch_mean.mean(dim=1, keepdim=True)                    # [B,1]
+            gains = (gray / ch_mean.clamp_min(1e-6)).clamp(0.5, 2.0)   # [B,3]
+            mean_c = ch_mean.mean(dim=0)
+            gain_c = gains.mean(dim=0)
+            for i, ch in enumerate(('r', 'g', 'b')):
+                log_dict[f'x1_mean_{ch}'] = mean_c[i].item()
+                log_dict[f'gw_gain_{ch}'] = gain_c[i].item()
+            # Fraction of per-image gains pinned at the 0.5/2.0 clamp: high
+            # values mean the WB statistic is truncated on extreme crops.
+            clamp_frac = ((gains <= 0.5) | (gains >= 2.0)).float().mean()
+            log_dict['gw_gain_clamp_frac'] = clamp_frac.item()
+        bare_net = self.get_bare_model(self.net_g)
+        denoiser = getattr(bare_net, 'denoiser', None)
+        if denoiser is not None and getattr(denoiser, 'residual_gray_world', False):
+            log_dict['gw_blend'] = float(getattr(denoiser, '_gray_world_blend', 1.0))
+        self.log_dict = log_dict
 
         if self.ema_decay > 0:
             decay = self.ema_decay
