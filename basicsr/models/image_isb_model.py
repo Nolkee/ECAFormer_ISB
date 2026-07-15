@@ -76,6 +76,13 @@ class ImageISBModel(ImageCleanModel):
         self.anchor_loss_weight = float(train_opt.get('anchor_loss_weight', 0.0))
         self.anchor_mode = str(train_opt.get('anchor_mode', 'gt')).lower()
         self.anchor_target_ratio = float(train_opt.get('anchor_target_ratio', 1.5))
+        # R51: deadzone — zero penalty while |mean_c(x1) - target| is within
+        # anchor_deadzone * target (relative band; x1's reachable range is
+        # only +-33% around the 1.5*lq midpoint and scales with brightness).
+        # Preserves per-image freedom inside the band, restores outside.
+        # 0.0 = exact L1 (R50c behavior). Must stay well below 0.33 or the
+        # band swallows the whole reachable range (no force at all).
+        self.anchor_deadzone = float(train_opt.get('anchor_deadzone', 0.0))
         if self.anchor_mode not in ('gt', 'x1_lq'):
             raise ValueError(
                 f"ImageISBModel: anchor_mode='{self.anchor_mode}' is invalid. "
@@ -86,6 +93,25 @@ class ImageISBModel(ImageCleanModel):
                 f"ImageISBModel: anchor_target_ratio={self.anchor_target_ratio} "
                 "is invalid. x1 = lq*(1+sigmoid) can only reach [1, 2]*lq."
             )
+        if self.anchor_deadzone < 0:
+            raise ValueError(
+                f"ImageISBModel: anchor_deadzone={self.anchor_deadzone} is "
+                "invalid. Expected a value >= 0."
+            )
+        if self.anchor_mode == 'x1_lq' and self.anchor_deadzone > 0:
+            # Reachable range around ratio*lq is [1, 2]*lq, i.e. a relative
+            # half-width of (2-ratio)/ratio above and (ratio-1)/ratio below.
+            # A band at/above the smaller half-width means zero force on that
+            # side everywhere — a silently inert anchor (the R49b failure).
+            max_band = min(2.0 - self.anchor_target_ratio,
+                           self.anchor_target_ratio - 1.0) / self.anchor_target_ratio
+            if self.anchor_deadzone >= max_band:
+                raise ValueError(
+                    f"ImageISBModel: anchor_deadzone={self.anchor_deadzone} >= "
+                    f"{max_band:.3f} covers x1's whole reachable range on one "
+                    f"side (target_ratio={self.anchor_target_ratio}) — the "
+                    "anchor would be silently inert. Use a smaller band."
+                )
         self.x0_loss_type = str(train_opt.get('x0_loss_type', 'mse')).lower()
         self.x0_charbonnier_eps = float(train_opt.get('x0_charbonnier_eps', 1e-3))
         self.accumulate_steps = int(train_opt.get('accumulate_steps', 1))
@@ -460,7 +486,14 @@ class ImageISBModel(ImageCleanModel):
                 target = self.anchor_target_ratio * self.lq.mean(dim=(2, 3))
             else:
                 target = gt.mean(dim=(2, 3))  # legacy 'gt' (inert on LOLv1)
-            l_anchor = F.l1_loss(x1_mean, target)
+            # R51: deadzone-L1 — no force while |x1_mean - target| is within
+            # deadzone*target (RELATIVE band: x1's reachable range [lq, 2*lq]
+            # is only +-33% around the 1.5*lq midpoint and scales with image
+            # brightness, so an absolute band would swallow dark images'
+            # entire range). deadzone 0.0 reduces to plain L1 (R50c).
+            diff = (x1_mean - target).abs()
+            band = self.anchor_deadzone * target
+            l_anchor = torch.clamp(diff - band, min=0.0).mean()
         loss_dict['l_anchor'] = l_anchor
 
         # FFT loss: frequency domain constraint

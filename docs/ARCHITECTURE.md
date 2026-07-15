@@ -96,7 +96,7 @@ output_activation: identity
 - Bridge loss = x0_loss (0.4) + pixel L1 (0.6), scaled by bridge_weight 1.0
 - VGG perceptual (0.1), color (channel-mean L1, 0.2), chroma (channel-std L1, 0.05)
 - TV on illu_map (0.002)
-- anchor (`anchor_mode: x1_lq`, weight 0.5, R50c only), green/fft (optional, off by default)
+- anchor (`anchor_mode: x1_lq`; R51: weight sweep 0.1-0.5, optional relative `anchor_deadzone`), green/fft (off by default)
 
 **Optimizer**: AdamW, lr 6e-5, cosine annealing 24K iter. Single param group
 by default; `estimator_lr_mult` (R50b: 0.3) splits the estimator into a second
@@ -122,7 +122,10 @@ group at a lower LR (warmup and cosine scale per group).
 | R49a | + gray-world/ema_warmup | 22.20 @ 9K | Green FIXED; desaturated, crash earlier (6.5K) |
 | R49b | + anchor 0.05 (gt) | 21.94 @ 8.5K | Anchor inert — crash identical to R49a |
 | R49c | + zero_init_mapping_bias | 22.07 @ 9.5K | Worst valley (17.5 @ 6.5K) |
-| R50a/b/c | gw decay / +est_lr 0.3 / +anchor x1_lq | pending | Color restore + crash fixes |
+| R50a | gw decay 1500-3500 | 22.21 @ 16K | Desat FIXED, LPIPS 0.1603 (first win); crash remains 6-7K |
+| R50b | + estimator_lr 0.3x | 20.83 @ 4.5K | REFUTED — longer/deeper transient, early-stopped |
+| R50c | + anchor x1_lq w0.5 | 21.75 @ 14.5K | NO CRASH (first ever); SSIM 0.8064 record; PSNR capped |
+| R51a/b/c | anchor w0.1 / w0.25 / w0.5+deadzone 0.15 | pending | Strength sweep: keep stability, free PSNR |
 
 ## Checkpoint & Disk Policy
 
@@ -157,6 +160,6 @@ See `basicsr/models/base_model.py` and `image_restoration_model.py`.
 
 ---
 
-**Last updated**: 2026-07-14
+**Last updated**: 2026-07-15
 **Champion config**: R48b (`Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`)
-**Active research**: R50 series (gray-world decay + drift stabilizers)
+**Active research**: R51 series (anchor-strength sweep + deadzone anchor)

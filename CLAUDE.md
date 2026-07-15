@@ -17,12 +17,13 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 **Result**: PSNR 22.21 @ 11.5K (best SSIM 0.7959 @ 15.5K, LPIPS 0.1635)
 **Key params**: `illumination_channels=3`, `channel_noise_scale=[1.0, 0.8, 1.0]`, `residual_scale=0.6`, `color_loss=0.2`
 
-**Active research**: R50 series (`train_r50_series.sh`) — fixes the two R49
-regressions. R49 killed the early green tint but permanent `residual_gray_world`
-(a) desaturated converged outputs (residual lost its per-image color cast) and
-(b) moved the mid-training PSNR crash EARLIER (5.5-7K). R50: decay the gray-world
-blend to 0 over iters 1500-3500 (`gray_world_decay_start/end`), slow the
-estimator (`estimator_lr_mult`), and use a REACHABLE anchor (`anchor_mode: x1_lq`).
+**Active research**: R51 series (`train_r51_series.sh`) — anchor-strength sweep.
+R50 verdict (2026-07-15): r50a (gw decay) fixed desaturation and matched the
+champion (22.21/0.7964/**0.1603** — first LPIPS win) but still crashed 6-7K;
+r50c (anchor x1_lq w0.5) ELIMINATED the crash (first no-valley curve; SSIM
+0.8064 record) but capped PSNR at 21.75; r50b (slow estimator) REFUTED. Anchor
+strength = clean one-variable tradeoff -> R51 sweeps w 0.1/0.25 and adds a
+relative deadzone (w0.5 force only outside +-15% of target).
 Root-cause analysis: `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 
 ## Config Conventions
@@ -60,6 +61,9 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
 - ❌ Permanent (unscheduled) `residual_gray_world` — desaturates converged outputs and
   amplifies estimator drift via detached reciprocal gains (R49 confirmed). Always pair
   with `gray_world_decay_start/end`
+- ❌ `estimator_lr_mult < 1` (slowing the estimator to stop the drift crash) — REFUTED
+  by r50b: the transient got longer and deeper (peak 20.83, early-stopped). The drift
+  needs a restoring force (anchor), not a slower clock
 
 ## Rules
 
@@ -76,7 +80,8 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
 - **LOLv2Real paths**: Use `Train/Low` and `Train/Normal` (not `input`/`target`)
 - **NaN guard**: `nan_guard: true` in config skips optimizer steps on non-finite gradients (expected behavior)
 - **R50 mechanism keys**: `gray_world_decay_start/end` live under `network_g` (arch
-  kwargs); `estimator_lr_mult`, `anchor_mode`, `anchor_target_ratio` live under `train`.
+  kwargs); `estimator_lr_mult`, `anchor_mode`, `anchor_target_ratio`, `anchor_deadzone` (R51:
+  relative band, must be < (2-ratio)/ratio) live under `train`.
   A key in the wrong section is silently ignored — the R50 code validates its own keys
   (bad decay window / non-positive lr mult / unknown anchor_mode raise at init)
 - **Training logs**: since R50, `log_dict` carries every loss component plus drift
