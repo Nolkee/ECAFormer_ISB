@@ -1,3 +1,9 @@
+> **SUPERSEDED (2026-07-10)** — the root cause below (identity_scale warmup
+> lacking green suppression) was later DISPROVEN. The verified root cause is
+> the residual shortcut copying the green input + EMA cold-start; the
+> identity_scale direction is now forbidden (R43/R44/R48c unstable).
+> See `docs/COLOR_SHIFT_ROOT_CAUSE.md`. Kept as a historical record only.
+
 # Early-Stage Green Tint During Warmup
 
 ## Problem

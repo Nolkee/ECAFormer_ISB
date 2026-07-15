@@ -32,13 +32,13 @@ Root-cause analysis: `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 - `val_freq: 500` (fine-grained metric tracking), `save_checkpoint_freq: 2000`, `print_freq: 1000`
 - `save_img: false` — selective image saving is handled in code, not by this flag
 - `early_stop_patience_val: 8`, `use_amp: true`, `grad_clip_value: 0.02`
-- All losses: Charbonnier pixel + VGG perceptual + color + chroma + TV (+ anchor in R49)
+- All losses: Charbonnier pixel + VGG perceptual + color + chroma + TV (+ x1_lq anchor since R50c)
 
 ## Training Commands
 
 ```bash
 python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml  # champion
-bash train_r49_series.sh   # active research (r49a/b/c)
+bash train_r51_series.sh   # active research (r51a/b/c: anchor w0.1/w0.25/w0.5+deadzone)
 ```
 
 Auto-resume: rerun the same command; it picks up `training_states/latest.state`
