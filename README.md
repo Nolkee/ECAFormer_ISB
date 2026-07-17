@@ -25,12 +25,13 @@ python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweigh
 **Result**: PSNR 22.21 @ 11.5K iter (SSIM 0.7959, LPIPS 0.164)
 **Key**: 3-channel illumination + per-channel bridge noise `channel_noise_scale=[1.0, 0.8, 1.0]`
 
-**Active research (R51)**: R50 confirmed the drift theory — the reachable x1
-anchor (r50c, w0.5) produced the first crash-free run in project history (SSIM
-0.8064 record) but capped PSNR at 21.75, while the gray-world decay alone
-(r50a) matched the champion incl. a first-ever LPIPS win (0.1603) but still
-crashed at 6-7K. R51 sweeps the anchor weight (0.1/0.25) and adds a relative
-deadzone (full force only outside +-15% of target) to get both.
+**Active research (R52)**: R51 revealed the mid-training valley is a PHASE
+TRANSITION into a higher-PSNR regime — every 22.2 run crashed first; every
+from-iter-0 anchor capped PSNR at ~21.8 (deadzone included); weak anchors
+failed both ways. R52 delays the anchor past the transition
+(`anchor_start_iter`) and locks the achieved regime via a frozen-EMA
+self-calibrating target (`anchor_mode: x1_ema`), aiming for PSNR >= 22.2 with
+SSIM >= 0.80. Perceptual champion so far: r51c @ 20K (21.82/0.8011/0.1639).
 See [docs/COLOR_SHIFT_ROOT_CAUSE.md](docs/COLOR_SHIFT_ROOT_CAUSE.md).
 
 ## Project Structure
@@ -41,7 +42,7 @@ ECAFormer_ISB/
 │   ├── models/
 │   │   ├── archs/ECAFormer_ISB_arch.py  # Main architecture
 │   │   └── image_isb_model.py           # Training loop
-├── Options/                    # Experiment configs (R11-R51 series)
+├── Options/                    # Experiment configs (R11-R52 series)
 ├── diagnostic_scripts/         # Training stability analysis tools
 ├── legacy_training_scripts/    # Historical training scripts (R11-R43)
 ├── tools/                      # Checkpoint diagnosis, inference
@@ -90,11 +91,11 @@ via `anchor_loss_weight` (pins bridge-endpoint channel means to GT).
 
 ## Experiments
 
-**Active research**: R51 series (anchor sweep + deadzone, on r50a base)
+**Active research**: R52 series (late x1_ema anchor, on r50a base)
 
 **Champion**: R48b (PSNR 22.21, SSIM 0.7959) — `channel_noise_scale` on bridge noise
 
-**Historical**: R11-R50 archived in `legacy_training_scripts/` and `Options/`
+**Historical**: R11-R51 archived in `legacy_training_scripts/` and `Options/`
 
 Training logs and checkpoints: `experiments/<config-name>/` (disk-safe: single
 `latest.state` + `net_g_latest.pth`, images only for baseline & best)

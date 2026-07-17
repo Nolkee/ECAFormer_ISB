@@ -96,7 +96,7 @@ output_activation: identity
 - Bridge loss = x0_loss (0.4) + pixel L1 (0.6), scaled by bridge_weight 1.0
 - VGG perceptual (0.1), color (channel-mean L1, 0.2), chroma (channel-std L1, 0.05)
 - TV on illu_map (0.002)
-- anchor (`anchor_mode: x1_lq`; R51: weight sweep 0.1-0.5, optional relative `anchor_deadzone`), green/fft (off by default)
+- anchor (R52: `anchor_mode: x1_ema` + `anchor_start_iter` — engage post-transition, frozen-EMA target; `x1_lq` for from-0 perceptual runs), green/fft (off by default)
 
 **Optimizer**: AdamW, lr 6e-5, cosine annealing 24K iter. Single param group
 by default; `estimator_lr_mult` (R50b: 0.3) splits the estimator into a second
@@ -125,7 +125,10 @@ group at a lower LR (warmup and cosine scale per group).
 | R50a | gw decay 1500-3500 | 22.21 @ 16K | Desat FIXED, LPIPS 0.1603 (first win); crash remains 6-7K |
 | R50b | + estimator_lr 0.3x | 20.83 @ 4.5K | REFUTED — longer/deeper transient, early-stopped |
 | R50c | + anchor x1_lq w0.5 | 21.75 @ 14.5K | NO CRASH (first ever); SSIM 0.8064 record; PSNR capped |
-| R51a/b/c | anchor w0.1 / w0.25 / w0.5+deadzone 0.15 | pending | Strength sweep: keep stability, free PSNR |
+| R51a | anchor w0.1 | 21.98 @ 16.5K | Still crashes (-2.9 dB); fixed-target drag post-transition |
+| R51b | anchor w0.25 | 21.61 @ 12.5K | Crashes EARLIER; strictly worst — no middle sweet spot |
+| R51c | anchor w0.5 + deadzone 0.15 | 21.83 @ 16K | No valley; SSIM 0.8011/LPIPS 0.1639 @ 20K = perceptual champ |
+| R52a/b/c | late x1_ema anchor 12K/9K / +zero-bias | pending | Let the transition happen, then lock the new regime |
 
 ## Checkpoint & Disk Policy
 
@@ -160,6 +163,6 @@ See `basicsr/models/base_model.py` and `image_restoration_model.py`.
 
 ---
 
-**Last updated**: 2026-07-15
+**Last updated**: 2026-07-16
 **Champion config**: R48b (`Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`)
-**Active research**: R51 series (anchor-strength sweep + deadzone anchor)
+**Active research**: R52 series (late self-calibrating anchor — phase-transition model)

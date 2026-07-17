@@ -83,15 +83,45 @@ class ImageISBModel(ImageCleanModel):
         # 0.0 = exact L1 (R50c behavior). Must stay well below 0.33 or the
         # band swallows the whole reachable range (no force at all).
         self.anchor_deadzone = float(train_opt.get('anchor_deadzone', 0.0))
-        if self.anchor_mode not in ('gt', 'x1_lq'):
+        # R52: the mid-training valley is a PHASE TRANSITION into a
+        # higher-PSNR illumination regime (every 22.2 run crashed; every
+        # from-iter-0-anchored run capped at ~21.8). anchor_start_iter
+        # delays the anchor so the transition can happen, then locks the
+        # NEW regime. anchor_mode 'x1_ema' targets the running EMA of the
+        # achieved mean(x1)/mean(lq) ratio (tracked from iter 0, detached)
+        # instead of a fixed prior — r51a showed even w0.1 of fixed-target
+        # drag costs ~0.23 dB post-transition. The EMA is not persisted
+        # across resume: it re-warms in ~100 iters (momentum 0.99) and the
+        # deadzone tolerates the transient.
+        self.anchor_start_iter = int(train_opt.get('anchor_start_iter', 0))
+        self.anchor_ema_momentum = float(train_opt.get('anchor_ema_momentum', 0.99))
+        self._anchor_ratio_ema = None
+        # Warm-update counter: the ratio EMA updates freely before
+        # anchor_start_iter, then FREEZES (a tracking EMA would follow the
+        # slow post-16K sag it exists to prevent). After a resume the EMA
+        # restarts from None — allow 200 warm iters (tau~100 at m=0.99) to
+        # re-converge before freezing again; anchored runs sit at
+        # equilibrium so the warm target is already correct.
+        self._anchor_ratio_warm = 0
+        if self.anchor_mode not in ('gt', 'x1_lq', 'x1_ema'):
             raise ValueError(
                 f"ImageISBModel: anchor_mode='{self.anchor_mode}' is invalid. "
-                "Supported values: 'gt', 'x1_lq'."
+                "Supported values: 'gt', 'x1_lq', 'x1_ema'."
             )
         if not 1.0 <= self.anchor_target_ratio <= 2.0:
             raise ValueError(
                 f"ImageISBModel: anchor_target_ratio={self.anchor_target_ratio} "
                 "is invalid. x1 = lq*(1+sigmoid) can only reach [1, 2]*lq."
+            )
+        if self.anchor_start_iter < 0:
+            raise ValueError(
+                f"ImageISBModel: anchor_start_iter={self.anchor_start_iter} "
+                "is invalid. Expected a value >= 0."
+            )
+        if not 0.0 < self.anchor_ema_momentum < 1.0:
+            raise ValueError(
+                f"ImageISBModel: anchor_ema_momentum={self.anchor_ema_momentum} "
+                "is invalid. Expected a value in (0, 1)."
             )
         if self.anchor_deadzone < 0:
             raise ValueError(
@@ -481,19 +511,39 @@ class ImageISBModel(ImageCleanModel):
         if self.anchor_loss_weight > 0:
             x1_recon = self.lq * illu_map + self.lq
             x1_mean = x1_recon.mean(dim=(2, 3))
-            if self.anchor_mode == 'x1_lq':
+            lq_mean = self.lq.mean(dim=(2, 3))
+            if self.anchor_mode == 'x1_ema':
+                # R52: track the achieved ratio from iter 0 so the target is
+                # already calibrated to the current regime when the anchor
+                # engages; freeze at engage (see __init__ comment).
+                with torch.no_grad():
+                    ratio = (x1_mean.float() /
+                             lq_mean.float().clamp_min(1e-6)).mean(dim=0)
+                    if self._anchor_ratio_ema is None:
+                        self._anchor_ratio_ema = ratio
+                        self._anchor_ratio_warm = 1
+                    elif (current_iter < self.anchor_start_iter
+                          or self._anchor_ratio_warm < 200):
+                        m = self.anchor_ema_momentum
+                        self._anchor_ratio_ema = (
+                            m * self._anchor_ratio_ema + (1.0 - m) * ratio
+                        )
+                        self._anchor_ratio_warm += 1
+                target = (self._anchor_ratio_ema.unsqueeze(0)
+                          * lq_mean.float()).to(x1_mean.dtype)
+            elif self.anchor_mode == 'x1_lq':
                 # R50: reachable two-sided target = ratio * mean_c(lq).
-                target = self.anchor_target_ratio * self.lq.mean(dim=(2, 3))
+                target = self.anchor_target_ratio * lq_mean
             else:
                 target = gt.mean(dim=(2, 3))  # legacy 'gt' (inert on LOLv1)
-            # R51: deadzone-L1 — no force while |x1_mean - target| is within
-            # deadzone*target (RELATIVE band: x1's reachable range [lq, 2*lq]
-            # is only +-33% around the 1.5*lq midpoint and scales with image
-            # brightness, so an absolute band would swallow dark images'
-            # entire range). deadzone 0.0 reduces to plain L1 (R50c).
-            diff = (x1_mean - target).abs()
-            band = self.anchor_deadzone * target
-            l_anchor = torch.clamp(diff - band, min=0.0).mean()
+            if current_iter >= self.anchor_start_iter:
+                # R51: deadzone-L1 — no force while |x1_mean - target| is
+                # within deadzone*target (RELATIVE band: x1's reachable range
+                # is only +-33% around its midpoint and scales with image
+                # brightness). deadzone 0.0 reduces to plain L1 (R50c).
+                diff = (x1_mean - target.detach()).abs()
+                band = self.anchor_deadzone * target.detach()
+                l_anchor = torch.clamp(diff - band, min=0.0).mean()
         loss_dict['l_anchor'] = l_anchor
 
         # FFT loss: frequency domain constraint
@@ -574,6 +624,11 @@ class ImageISBModel(ImageCleanModel):
         denoiser = getattr(bare_net, 'denoiser', None)
         if denoiser is not None and getattr(denoiser, 'residual_gray_world', False):
             log_dict['gw_blend'] = float(getattr(denoiser, '_gray_world_blend', 1.0))
+        # R52: where the regime actually sits — watch this jump during the
+        # phase transition and freeze once the anchor engages.
+        if self._anchor_ratio_ema is not None:
+            for i, ch in enumerate(('r', 'g', 'b')):
+                log_dict[f'anchor_ratio_ema_{ch}'] = self._anchor_ratio_ema[i].item()
         self.log_dict = log_dict
 
         if self.ema_decay > 0:

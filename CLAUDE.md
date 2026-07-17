@@ -17,13 +17,14 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 **Result**: PSNR 22.21 @ 11.5K (best SSIM 0.7959 @ 15.5K, LPIPS 0.1635)
 **Key params**: `illumination_channels=3`, `channel_noise_scale=[1.0, 0.8, 1.0]`, `residual_scale=0.6`, `color_loss=0.2`
 
-**Active research**: R51 series (`train_r51_series.sh`) — anchor-strength sweep.
-R50 verdict (2026-07-15): r50a (gw decay) fixed desaturation and matched the
-champion (22.21/0.7964/**0.1603** — first LPIPS win) but still crashed 6-7K;
-r50c (anchor x1_lq w0.5) ELIMINATED the crash (first no-valley curve; SSIM
-0.8064 record) but capped PSNR at 21.75; r50b (slow estimator) REFUTED. Anchor
-strength = clean one-variable tradeoff -> R51 sweeps w 0.1/0.25 and adds a
-relative deadzone (w0.5 force only outside +-15% of target).
+**Active research**: R52 series (`train_r52_series.sh`) — late self-calibrating
+anchor. R51 verdict (2026-07-16): the mid-training valley is a PHASE TRANSITION
+into a higher-PSNR illumination regime — every 22.2 run crashed first, every
+from-iter-0 anchor capped PSNR ~21.8 (even with a +-15% deadzone), and weak
+anchors (w<=0.25) failed both ways (valley remains + fixed-target drag).
+R52: `anchor_start_iter` lets the transition happen, then `anchor_mode: x1_ema`
+locks the ACHIEVED x1/lq ratio (frozen EMA), targeting PSNR>=22.2 + SSIM>=0.80.
+Perceptual champion so far: r51c @ 20K (21.82/0.8011/0.1639).
 Root-cause analysis: `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 
 ## Config Conventions
@@ -64,6 +65,11 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
 - ❌ `estimator_lr_mult < 1` (slowing the estimator to stop the drift crash) — REFUTED
   by r50b: the transient got longer and deeper (peak 20.83, early-stopped). The drift
   needs a restoring force (anchor), not a slower clock
+- ❌ Anchor weights <= 0.25 (x1_lq) — fail BOTH ways (R51): the valley still happens
+  and the fixed target drags post-transition PSNR. Stability needs w~0.5-class force
+- ❌ From-iter-0 anchor on a PSNR-chasing run — blocks the phase transition, caps PSNR
+  ~21.8 (r50c/r51c). Use `anchor_start_iter` + `anchor_mode: x1_ema` (R52) instead;
+  from-0 anchoring is only for perceptual-champion runs (SSIM/LPIPS)
 
 ## Rules
 
@@ -81,7 +87,9 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
 - **NaN guard**: `nan_guard: true` in config skips optimizer steps on non-finite gradients (expected behavior)
 - **R50 mechanism keys**: `gray_world_decay_start/end` live under `network_g` (arch
   kwargs); `estimator_lr_mult`, `anchor_mode`, `anchor_target_ratio`, `anchor_deadzone` (R51:
-  relative band, must be < (2-ratio)/ratio) live under `train`.
+  relative band, must be < (2-ratio)/ratio), `anchor_start_iter`, `anchor_ema_momentum`
+  (R52: x1_ema tracks from iter 0, FREEZES at engage; re-warms 200 iters after resume)
+  live under `train`.
   A key in the wrong section is silently ignored — the R50 code validates its own keys
   (bad decay window / non-positive lr mult / unknown anchor_mode raise at init)
 - **Training logs**: since R50, `log_dict` carries every loss component plus drift

@@ -58,10 +58,10 @@ python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweigh
 
 **Expected result**: PSNR ~22.2 @ 11.5K iter, SSIM ~0.796
 
-### Active research: R51 series (anchor sweep + deadzone)
+### Active research: R52 series (late self-calibrating anchor)
 
 ```bash
-bash train_r51_series.sh   # r51a (anchor w0.1) -> r51b (w0.25) -> r51c (w0.5 + deadzone 0.15)
+bash train_r52_series.sh   # r52a/b (x1_ema anchor @ 12K/9K) -> r52c (r51c + zero-bias)
 ```
 
 Training auto-resumes from `experiments/<name>/training_states/latest.state` if present.
@@ -122,9 +122,11 @@ See `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 
 Global brightness/color drift: the estimator moves x1 (bridge endpoint) faster
 than the denoiser can track. Check `x1_mean_*` / `gw_*` curves in TensorBoard.
-Fix: `anchor_mode: x1_lq` (r50c proved w0.5 fully removes the crash; R51
-sweeps lighter weights/deadzone for PSNR). Do NOT use `estimator_lr_mult < 1`
-(refuted, r50b) or the R49 anchor-to-GT (inert).
+This valley is a phase transition into a higher-PSNR regime (R51 verdict) —
+suppress it only on perceptual runs (`anchor_mode: x1_lq` w0.5, caps PSNR
+~21.8). For PSNR runs let it happen and lock afterwards:
+`anchor_start_iter: 12000` + `anchor_mode: x1_ema` (R52). Do NOT use weak
+anchors (w<=0.25), `estimator_lr_mult < 1`, or the R49 anchor-to-GT.
 
 ### Disk fills up
 
