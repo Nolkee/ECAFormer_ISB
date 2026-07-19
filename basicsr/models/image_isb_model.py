@@ -103,6 +103,42 @@ class ImageISBModel(ImageCleanModel):
         # re-converge before freezing again; anchored runs sit at
         # equilibrium so the warm target is already correct.
         self._anchor_ratio_warm = 0
+        # R53: auto-engage — a fixed anchor_start_iter is fragile because the
+        # transition timing is stochastic (observed 5.5K-9K across identical
+        # configs; r52a's 12K engage landed AFTER the peak and locked a
+        # declined state, r52b's 9K landed at the valley bottom and produced
+        # the 22.69 record). 'auto' watches a train-PSNR EMA: valley = drop of
+        # anchor_valley_drop dB below the running peak; engage fires when the
+        # EMA turns and rises anchor_rise_margin dB off the valley bottom
+        # (early recovery — the r52b-winning timing). anchor_start_iter then
+        # acts as a HARD CAP (also the resume fallback). anchor_freeze_delay
+        # keeps the ratio-EMA target trailing (tau~100) for that many iters
+        # after engage before freezing, so the lock lands on the settled
+        # regime, not mid-recovery.
+        self.anchor_engage_mode = str(train_opt.get('anchor_engage_mode', 'fixed')).lower()
+        self.anchor_valley_drop = float(train_opt.get('anchor_valley_drop', 1.0))
+        self.anchor_rise_margin = float(train_opt.get('anchor_rise_margin', 0.5))
+        self.anchor_min_engage_iter = int(train_opt.get('anchor_min_engage_iter', 4000))
+        self.anchor_freeze_delay = int(train_opt.get('anchor_freeze_delay', 0))
+        self._anchor_engaged_iter = None
+        self._anchor_psnr_ema = None
+        self._anchor_psnr_peak = float('-inf')
+        self._anchor_valley_bottom = None
+        if self.anchor_engage_mode not in ('fixed', 'auto'):
+            raise ValueError(
+                f"ImageISBModel: anchor_engage_mode='{self.anchor_engage_mode}' "
+                "is invalid. Supported values: 'fixed', 'auto'."
+            )
+        if self.anchor_valley_drop <= 0 or self.anchor_rise_margin <= 0:
+            raise ValueError(
+                "ImageISBModel: anchor_valley_drop and anchor_rise_margin "
+                "must both be > 0."
+            )
+        if self.anchor_min_engage_iter < 0 or self.anchor_freeze_delay < 0:
+            raise ValueError(
+                "ImageISBModel: anchor_min_engage_iter and anchor_freeze_delay "
+                "must both be >= 0."
+            )
         if self.anchor_mode not in ('gt', 'x1_lq', 'x1_ema'):
             raise ValueError(
                 f"ImageISBModel: anchor_mode='{self.anchor_mode}' is invalid. "
@@ -318,6 +354,84 @@ class ImageISBModel(ImageCleanModel):
             psnr = -10.0 * math.log10(max(mse, 1e-12))
         self._train_psnr_values.append(psnr)
 
+    def _anchor_active(self, current_iter):
+        return (self._anchor_engaged_iter is not None
+                and current_iter >= self._anchor_engaged_iter)
+
+    def _update_anchor_engage(self, current_iter):
+        """R53: decide when the anchor engages (see __init__ comment)."""
+        if self.anchor_loss_weight <= 0 or self._anchor_engaged_iter is not None:
+            return
+        if self.anchor_engage_mode == 'fixed':
+            if current_iter >= self.anchor_start_iter:
+                self._anchor_engaged_iter = current_iter
+            return
+        # auto mode — hard cap (also covers resumes that lost the state)
+        if current_iter >= self.anchor_start_iter:
+            self._anchor_engaged_iter = current_iter
+            get_root_logger().info(
+                f'[anchor] engaged at iter {current_iter} (hard cap '
+                f'{self.anchor_start_iter}).')
+            return
+        if not self._train_psnr_values:
+            return
+        p = self._train_psnr_values[-1]
+        self._anchor_psnr_ema = (
+            p if self._anchor_psnr_ema is None
+            else 0.99 * self._anchor_psnr_ema + 0.01 * p
+        )
+        ema = self._anchor_psnr_ema
+        if current_iter < self.anchor_min_engage_iter:
+            self._anchor_psnr_peak = max(self._anchor_psnr_peak, ema)
+            return
+        if self._anchor_valley_bottom is None:
+            self._anchor_psnr_peak = max(self._anchor_psnr_peak, ema)
+            if ema <= self._anchor_psnr_peak - self.anchor_valley_drop:
+                self._anchor_valley_bottom = ema
+                get_root_logger().info(
+                    f'[anchor] valley detected at iter {current_iter} '
+                    f'(train-PSNR EMA {ema:.2f}, peak {self._anchor_psnr_peak:.2f}).')
+        else:
+            if ema < self._anchor_valley_bottom:
+                self._anchor_valley_bottom = ema
+            elif ema >= self._anchor_valley_bottom + self.anchor_rise_margin:
+                self._anchor_engaged_iter = current_iter
+                get_root_logger().info(
+                    f'[anchor] engaged at iter {current_iter} (recovery turn: '
+                    f'EMA {ema:.2f}, bottom {self._anchor_valley_bottom:.2f}).')
+
+    def _extra_training_state(self):
+        # Persist R52/R53 anchor state so a resume neither re-runs the valley
+        # detector from scratch nor re-warms the frozen ratio target.
+        if self.anchor_loss_weight <= 0:
+            return {}
+        extra = {
+            'anchor_engaged_iter': self._anchor_engaged_iter,
+            'anchor_ratio_warm': self._anchor_ratio_warm,
+            'anchor_psnr_ema': self._anchor_psnr_ema,
+            'anchor_psnr_peak': self._anchor_psnr_peak,
+            'anchor_valley_bottom': self._anchor_valley_bottom,
+        }
+        if self._anchor_ratio_ema is not None:
+            extra['anchor_ratio_ema'] = self._anchor_ratio_ema.detach().cpu()
+        return extra
+
+    def _load_extra_training_state(self, extra):
+        if not extra:
+            return
+        self._anchor_engaged_iter = extra.get('anchor_engaged_iter', None)
+        self._anchor_ratio_warm = int(extra.get('anchor_ratio_warm', 0))
+        self._anchor_psnr_ema = extra.get('anchor_psnr_ema', None)
+        self._anchor_psnr_peak = float(
+            extra.get('anchor_psnr_peak', float('-inf')))
+        self._anchor_valley_bottom = extra.get('anchor_valley_bottom', None)
+        ema = extra.get('anchor_ratio_ema', None)
+        if ema is not None:
+            self._anchor_ratio_ema = ema.to(self.device)
+        get_root_logger().info(
+            f'[anchor] state restored: engaged_iter={self._anchor_engaged_iter}, '
+            f'ratio_warm={self._anchor_ratio_warm}.')
+
     def _mark_nan_skip(self, reason='unknown'):
         self._nan_skip_count_epoch += 1
         self._nan_skip_count_total += 1
@@ -449,6 +563,8 @@ class ImageISBModel(ImageCleanModel):
             raw_predicted_x0, predicted_x0_eval
         )
         self._append_train_psnr(predicted_x0_eval, gt)
+        # R53: adaptive anchor engagement watches the train-PSNR trend.
+        self._update_anchor_engage(current_iter)
         if (raw_out_min < 0.0 or raw_out_max > 1.0) and (
             current_iter - self._last_range_warn_iter >= self.output_range_log_interval
         ):
@@ -515,14 +631,22 @@ class ImageISBModel(ImageCleanModel):
             if self.anchor_mode == 'x1_ema':
                 # R52: track the achieved ratio from iter 0 so the target is
                 # already calibrated to the current regime when the anchor
-                # engages; freeze at engage (see __init__ comment).
+                # engages. R53: keep trailing for anchor_freeze_delay iters
+                # after engage (lock the settled regime, not mid-recovery),
+                # then FREEZE (see __init__ comment).
                 with torch.no_grad():
                     ratio = (x1_mean.float() /
                              lq_mean.float().clamp_min(1e-6)).mean(dim=0)
+                    engaged = self._anchor_active(current_iter)
+                    still_trailing = (
+                        self._anchor_engaged_iter is not None
+                        and current_iter < (self._anchor_engaged_iter
+                                            + self.anchor_freeze_delay)
+                    )
                     if self._anchor_ratio_ema is None:
                         self._anchor_ratio_ema = ratio
                         self._anchor_ratio_warm = 1
-                    elif (current_iter < self.anchor_start_iter
+                    elif (not engaged or still_trailing
                           or self._anchor_ratio_warm < 200):
                         m = self.anchor_ema_momentum
                         self._anchor_ratio_ema = (
@@ -536,7 +660,7 @@ class ImageISBModel(ImageCleanModel):
                 target = self.anchor_target_ratio * lq_mean
             else:
                 target = gt.mean(dim=(2, 3))  # legacy 'gt' (inert on LOLv1)
-            if current_iter >= self.anchor_start_iter:
+            if self._anchor_active(current_iter):
                 # R51: deadzone-L1 — no force while |x1_mean - target| is
                 # within deadzone*target (RELATIVE band: x1's reachable range
                 # is only +-33% around its midpoint and scales with image
@@ -629,6 +753,8 @@ class ImageISBModel(ImageCleanModel):
         if self._anchor_ratio_ema is not None:
             for i, ch in enumerate(('r', 'g', 'b')):
                 log_dict[f'anchor_ratio_ema_{ch}'] = self._anchor_ratio_ema[i].item()
+        if self.anchor_loss_weight > 0:
+            log_dict['anchor_engaged'] = 1.0 if self._anchor_active(current_iter) else 0.0
         self.log_dict = log_dict
 
         if self.ema_decay > 0:

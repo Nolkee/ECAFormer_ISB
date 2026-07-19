@@ -117,8 +117,27 @@ SSIM 0.80+ / PSNR ≤21.83。稳定性近似二值（w0.5 级力才挡得住）�
 | **小死区** | `anchor_deadzone: 0.05` | 只吸收 batch 噪声，不放过域漂移 |
 | **感知冲榜** | r52c = r51c + `zero_init_mapping_bias` | 假设 r49c 的失败源于无锚相变；锚稳后 R41b 的感知增益（史上 LPIPS 0.1537）应可安全收割 |
 
-当前资产：**PSNR 冠军** R48b/r50a（22.21）；**感知冠军** r51c @ 20K
-（21.82/0.8011/0.1639）。R52 目标：(≥22.2, ≥0.80) —— 现 Pareto 前沿外的点。
+## R52 裁决（2026-07-19）：相变模型兑现，r52b 登顶
+
+- **r52b（engage 9K）@ 11.5K：22.689 / 0.8042 / 0.1664 —— 新总冠军**，单
+  checkpoint 同时刷新 PSNR（+0.48 dB）与 SSIM。engage 恰好落在谷底回升段。
+- r52a（engage 12K）：相变时机随机（同配置谷底 5.5K vs 7.5K），12K 落在峰值
+  之后 → 锁住了已阴跌的状态（峰 22.37 @ 9.5K，锁定后 ~22.13）。
+- 冻结锚没止住峰后阴跌：r52b 12.5K→15.5K 掉 -0.76 dB——0.05 死区允许 ±5% 游走，
+  阴跌从带内溜走（对照：r50c/r51c 紧锁全程无阴跌）。
+- r52c（zero_init_mapping_bias @ 锚定基座）：再次被推翻（21.18/0.786），方向关闭。
+
+## 解决方案 v4（R53 系列，2026-07-19，投稿前最后一轮）
+
+| 机制 | 配置项 | 作用 |
+|---|---|---|
+| **精确锁** | `anchor_deadzone: 0` + `early_stop_patience_val: 12` | 关死区堵住阴跌逃逸通道；放宽耐心在锁定域里收割 SSIM/LPIPS |
+| **自动 engage** | `anchor_engage_mode: auto`（`valley_drop 1.0` / `rise_margin 0.5` / `min_engage 4000` / cap=anchor_start_iter 12000） | 用 train-PSNR EMA 检测谷底回升拐点自动上锁——把 r52b 的运气变成机制；三条观测时间线仿真触发于 7.1K/9.0K/7.2K |
+| **延迟冻结** | `anchor_freeze_delay: 1500` | engage 后目标再跟随 1.5K iters 才冻结，锁"稳定后的域"而非恢复中途 |
+| **状态持久化** | `latest.state` 的 `model_extra` | engage 状态+冻结比率跨 resume 保留（base_model `_extra_training_state` 钩子），resume 不再失忆 |
+
+当前资产：**总冠军 r52b @ 11.5K（22.689/0.8042/0.1664）**；感知冠军 r51c @ 20K。
+论文泛化表：`Options/ISB_ecaformer_r53_lolv2real.yml`（r53b 配方 + LOLv2Real）。
 
 ## 被推翻/放弃的方向（勿重试）
 
@@ -128,4 +147,5 @@ SSIM 0.80+ / PSNR ≤21.83。稳定性近似二值（w0.5 级力才挡得住）�
 - **锚定 x1 通道均值到 GT（`anchor_mode: gt`）** —— sigmoid 上限使目标 100% 不可达，损失为饱和常数（R49b 实证零效果）。锚定目标必须落在 x1 的可达域内。
 - **永久（无调度）灰世界残差** —— 去饱和 + 崩溃提前（R49 实证）。必须配 `gray_world_decay_start/end`。
 - **弱锚定（w ≤ 0.25）** —— 挡不住相变还拖累恢复后的域（R51 实证）。
+- **zero_init_mapping_bias** —— 两度被推翻：无锚基座最深谷底（r49c）、锚定基座全面变差（r52c）。
 - **"锚定强度是连续权衡"** —— 推翻。稳定性近似二值；PSNR 天花板来自被阻止的相变，不是被钉死的均值（r51c 死区实验为证）。

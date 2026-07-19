@@ -11,20 +11,25 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 - **Diagnostic tools**: `diagnostic_scripts/` — Training stability analysis, checkpoint diagnosis
 - **Legacy scripts**: `legacy_training_scripts/` — Historical experiments R11-R43
 
-## Current Champion: R48b
+## Current Champion: r52b (late EMA anchor)
 
-**Config**: `Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`
-**Result**: PSNR 22.21 @ 11.5K (best SSIM 0.7959 @ 15.5K, LPIPS 0.1635)
-**Key params**: `illumination_channels=3`, `channel_noise_scale=[1.0, 0.8, 1.0]`, `residual_scale=0.6`, `color_loss=0.2`
+**Config**: `Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml`
+**Result**: PSNR 22.689 / SSIM 0.8042 / LPIPS 0.1664 — all at ONE checkpoint (11.5K)
+**Recipe**: R48b base + gray-world decay 1500-3500 + ema_warmup + x1_ema anchor
+(w0.5, deadzone 0.05, engage @ 9K, frozen-EMA target). Beat previous bests on
+PSNR (+0.48 dB) and SSIM simultaneously. AAAI headline model; verify the saved
+`best_psnr_*.pth` is the 11.5K checkpoint (metric-summary script showed a
+12.5K/11.5K discrepancy).
 
-**Active research**: R52 series (`train_r52_series.sh`) — late self-calibrating
-anchor. R51 verdict (2026-07-16): the mid-training valley is a PHASE TRANSITION
-into a higher-PSNR illumination regime — every 22.2 run crashed first, every
-from-iter-0 anchor capped PSNR ~21.8 (even with a +-15% deadzone), and weak
-anchors (w<=0.25) failed both ways (valley remains + fixed-target drag).
-R52: `anchor_start_iter` lets the transition happen, then `anchor_mode: x1_ema`
-locks the ACHIEVED x1/lq ratio (frozen EMA), targeting PSNR>=22.2 + SSIM>=0.80.
-Perceptual champion so far: r51c @ 20K (21.82/0.8011/0.1639).
+**Active research**: R53 series (`train_r53_series.sh`) — final pre-AAAI round.
+R52 verdict (2026-07-19): the phase-transition model delivered — r52b is the
+new champion — but (a) the 0.05 deadzone let a -0.76 dB post-peak sag escape
+(r50c/r51c tight pins never sagged) and (b) transition timing is stochastic
+(5.5K vs 7.5K on identical configs), so r52a's fixed 12K engage locked in a
+post-peak decline. R53: deadzone 0 + patience 12 (hold the peak), auto-engage
+at the train-PSNR recovery turn with 12K cap + engage-state persistence
+(de-luck the timing), seed 3407 arm (second draw + mean±std for reviewers).
+Generalization run for the paper: `Options/ISB_ecaformer_r53_lolv2real.yml`.
 Root-cause analysis: `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 
 ## Config Conventions
@@ -38,8 +43,8 @@ Root-cause analysis: `docs/COLOR_SHIFT_ROOT_CAUSE.md`.
 ## Training Commands
 
 ```bash
-python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml  # champion
-bash train_r51_series.sh   # active research (r51a/b/c: anchor w0.1/w0.25/w0.5+deadzone)
+python -m basicsr.train --opt Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml  # champion recipe
+bash train_r53_series.sh   # active research (r53a dz0 / r53b auto-engage / r53c seed 3407)
 ```
 
 Auto-resume: rerun the same command; it picks up `training_states/latest.state`
@@ -70,6 +75,8 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
 - ❌ From-iter-0 anchor on a PSNR-chasing run — blocks the phase transition, caps PSNR
   ~21.8 (r50c/r51c). Use `anchor_start_iter` + `anchor_mode: x1_ema` (R52) instead;
   from-0 anchoring is only for perceptual-champion runs (SSIM/LPIPS)
+- ❌ `zero_init_mapping_bias` — REFUTED twice: worst valley unanchored (r49c) AND
+  strictly worse on the anchored base (r52c: 21.18/0.786 vs r51c 21.83/0.8011)
 
 ## Rules
 
@@ -88,8 +95,11 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
 - **R50 mechanism keys**: `gray_world_decay_start/end` live under `network_g` (arch
   kwargs); `estimator_lr_mult`, `anchor_mode`, `anchor_target_ratio`, `anchor_deadzone` (R51:
   relative band, must be < (2-ratio)/ratio), `anchor_start_iter`, `anchor_ema_momentum`
-  (R52: x1_ema tracks from iter 0, FREEZES at engage; re-warms 200 iters after resume)
-  live under `train`.
+  (R52: x1_ema tracks from iter 0, freezes at engage), `anchor_engage_mode` +
+  `anchor_valley_drop/rise_margin/min_engage_iter/freeze_delay` (R53 auto-engage;
+  in auto mode anchor_start_iter is the hard cap) live under `train`.
+  R53 persists engage state + frozen ratio in `latest.state` (`model_extra` via
+  the `_extra_training_state` hook in base_model) — legacy states resume fine.
   A key in the wrong section is silently ignored — the R50 code validates its own keys
   (bad decay window / non-positive lr mult / unknown anchor_mode raise at init)
 - **Training logs**: since R50, `log_dict` carries every loss component plus drift

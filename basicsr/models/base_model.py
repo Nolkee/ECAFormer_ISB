@@ -369,6 +369,10 @@ class BaseModel():
             state['best_metric'] = kwargs['best_metric']
             if self.opt['is_train'] and self.opt.get('use_amp', False):
                 state['amp_scaler'] = self.amp_scaler.state_dict()
+            # R53: model-specific extra state (e.g. anchor engage/EMA state).
+            extra = self._extra_training_state()
+            if extra:
+                state['model_extra'] = extra
             # Disk-space safe: keep ONE running state that is overwritten every
             # save, instead of accumulating sequential `{iter}.state` files
             # (each bundles optimizer+scheduler+AMP and can be GBs). The actual
@@ -403,6 +407,22 @@ class BaseModel():
         if self.opt['is_train'] and self.opt.get('use_amp', False):
             if resume_state.get('amp_scaler', None):
                 self.amp_scaler.load_state_dict(resume_state['amp_scaler'])
+
+        # R53: model-specific extra state (missing in legacy .state files)
+        self._load_extra_training_state(resume_state.get('model_extra', {}))
+
+    def _extra_training_state(self):
+        """Subclass hook: extra picklable state persisted into .state files.
+
+        Returned dict is stored under state['model_extra'] and handed back to
+        _load_extra_training_state on resume. Legacy states without the key
+        resume with an empty dict (subclasses must tolerate that).
+        """
+        return {}
+
+    def _load_extra_training_state(self, extra):
+        """Subclass hook: restore state saved by _extra_training_state."""
+        pass
 
     def reduce_loss_dict(self, loss_dict):
         """reduce loss dict.

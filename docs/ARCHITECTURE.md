@@ -82,14 +82,22 @@ regressions — see `docs/COLOR_SHIFT_ROOT_CAUSE.md` for the full mechanism.
 
 ### 4. Training Configuration
 
-**Champion (R48b)**:
+**Champion recipe (r52b)** — R48b network base + the R50/R52 mechanisms:
 ```yaml
 illumination_channels: 3
 residual_scale_init: 0.6
 channel_noise_scale: [1.0, 0.8, 1.0]
-channel_scale_init: [1.0, 1.0, 1.0]
 use_out_norm: true
 output_activation: identity
+residual_gray_world: true
+gray_world_decay_start: 1500
+gray_world_decay_end: 3500
+# train section:
+ema_warmup: true
+anchor_loss_weight: 0.5
+anchor_mode: x1_ema
+anchor_start_iter: 9000   # R53b: anchor_engage_mode auto + cap 12000 instead
+anchor_deadzone: 0.0      # R53 (r52b ran 0.05 and sagged post-peak)
 ```
 
 **Loss components** (`image_isb_model.py`):
@@ -118,7 +126,7 @@ group at a lower LR (warmup and cosine scale per group).
 |------|----------------|-----------|-------|
 | R38c | channel_scale, illum=1 | 22.10 @ 10K | Green early, mid crash |
 | R42a | residual_scale per-ch | 21.64 @ 10.5K | Stable, below champion |
-| R48b | channel_noise_scale, illum=3 | **22.21 @ 11.5K** | **Champion** (SSIM 0.7959) |
+| R48b | channel_noise_scale, illum=3 | 22.21 @ 11.5K | Former champion (SSIM 0.7959) |
 | R49a | + gray-world/ema_warmup | 22.20 @ 9K | Green FIXED; desaturated, crash earlier (6.5K) |
 | R49b | + anchor 0.05 (gt) | 21.94 @ 8.5K | Anchor inert — crash identical to R49a |
 | R49c | + zero_init_mapping_bias | 22.07 @ 9.5K | Worst valley (17.5 @ 6.5K) |
@@ -128,7 +136,10 @@ group at a lower LR (warmup and cosine scale per group).
 | R51a | anchor w0.1 | 21.98 @ 16.5K | Still crashes (-2.9 dB); fixed-target drag post-transition |
 | R51b | anchor w0.25 | 21.61 @ 12.5K | Crashes EARLIER; strictly worst — no middle sweet spot |
 | R51c | anchor w0.5 + deadzone 0.15 | 21.83 @ 16K | No valley; SSIM 0.8011/LPIPS 0.1639 @ 20K = perceptual champ |
-| R52a/b/c | late x1_ema anchor 12K/9K / +zero-bias | pending | Let the transition happen, then lock the new regime |
+| R52a | x1_ema anchor @ 12K | 22.37 @ 9.5K | Engage landed post-peak (stochastic timing) — locked a declined state |
+| R52b | x1_ema anchor @ 9K | **22.69 @ 11.5K** | **CHAMPION** (SSIM 0.8042, LPIPS 0.1664 same ckpt); sagged -0.76 dB after |
+| R52c | r51c + zero-bias | 21.18 @ 12.5K | REFUTED again — worse everywhere on the anchored base |
+| R53a/b/c | dz0+patience12 / auto-engage / seed 3407 | pending | Hold the peak; de-luck the engage; seed stats |
 
 ## Checkpoint & Disk Policy
 
@@ -149,6 +160,7 @@ See `basicsr/models/base_model.py` and `image_restoration_model.py`.
 - ❌ `channel_scale < 0.90` — PSNR loss exceeds green fix benefit (R40)
 - ❌ `identity_scale` (any variant) — unstable everywhere tried (R43/R44/R48c)
 - ❌ `green_norm` in training mode only — train/val mismatch (R45)
+- ❌ `zero_init_mapping_bias` — refuted on unanchored (r49c) and anchored (r52c) bases
 - ❌ `anchor_mode: gt` — target unreachable (sigmoid caps x1 at 2*lq << gt), loss is a saturated constant (R49b)
 - ❌ permanent `residual_gray_world` (no decay) — desaturates + destabilizes (R49); pair with `gray_world_decay_start/end`
 
@@ -163,6 +175,6 @@ See `basicsr/models/base_model.py` and `image_restoration_model.py`.
 
 ---
 
-**Last updated**: 2026-07-16
-**Champion config**: R48b (`Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`)
-**Active research**: R52 series (late self-calibrating anchor — phase-transition model)
+**Last updated**: 2026-07-19
+**Champion config**: r52b (`Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml`, 22.689/0.8042/0.1664 @ 11.5K)
+**Active research**: R53 series (exact lock + auto-engage; AAAI final round)

@@ -13,25 +13,26 @@ cd ECAFormer_ISB
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 # Install basicsr and other dependencies
 
-# Train current champion
-python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml
+# Train current champion recipe
+python -m basicsr.train --opt Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml
 ```
 
 **Full guide**: [docs/QUICKSTART.md](docs/QUICKSTART.md)
 
-## Current Champion: R48b
+## Current Champion: r52b (late EMA anchor)
 
-**Config**: `Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`
-**Result**: PSNR 22.21 @ 11.5K iter (SSIM 0.7959, LPIPS 0.164)
-**Key**: 3-channel illumination + per-channel bridge noise `channel_noise_scale=[1.0, 0.8, 1.0]`
+**Config**: `Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml`
+**Result**: PSNR 22.689 / SSIM 0.8042 / LPIPS 0.1664 — all at one checkpoint (11.5K)
+**Key**: let the mid-training phase transition happen, then lock the achieved
+illumination regime with a frozen-EMA anchor (`anchor_mode: x1_ema` @ 9K)
 
-**Active research (R52)**: R51 revealed the mid-training valley is a PHASE
-TRANSITION into a higher-PSNR regime — every 22.2 run crashed first; every
-from-iter-0 anchor capped PSNR at ~21.8 (deadzone included); weak anchors
-failed both ways. R52 delays the anchor past the transition
-(`anchor_start_iter`) and locks the achieved regime via a frozen-EMA
-self-calibrating target (`anchor_mode: x1_ema`), aiming for PSNR >= 22.2 with
-SSIM >= 0.80. Perceptual champion so far: r51c @ 20K (21.82/0.8011/0.1639).
+**Active research (R53, final pre-AAAI)**: r52b validated the phase-transition
+design but sagged -0.76 dB after its peak (the 0.05 deadzone let slow drift
+escape) and the transition timing is stochastic (fixed engage iters can land
+after the peak, as r52a's did). R53: exact lock (deadzone 0) + auto-engage at
+the train-PSNR recovery turn (12K hard cap, state persisted across resume) +
+a second seed for mean±std. Generalization config for the paper:
+`Options/ISB_ecaformer_r53_lolv2real.yml`.
 See [docs/COLOR_SHIFT_ROOT_CAUSE.md](docs/COLOR_SHIFT_ROOT_CAUSE.md).
 
 ## Project Structure
@@ -42,7 +43,7 @@ ECAFormer_ISB/
 │   ├── models/
 │   │   ├── archs/ECAFormer_ISB_arch.py  # Main architecture
 │   │   └── image_isb_model.py           # Training loop
-├── Options/                    # Experiment configs (R11-R52 series)
+├── Options/                    # Experiment configs (R11-R53 series)
 ├── diagnostic_scripts/         # Training stability analysis tools
 ├── legacy_training_scripts/    # Historical training scripts (R11-R43)
 ├── tools/                      # Checkpoint diagnosis, inference
@@ -54,17 +55,18 @@ ECAFormer_ISB/
 └── README.md                   # This file
 ```
 
-## Key Findings (2026-07-10)
+## Key Findings
 
-**Early green tint (verified root cause)**: the output residual shortcut
+**Early green tint (verified 2026-07-10)**: the output residual shortcut
 `out = mapping + 0.6*x1` makes early outputs a copy of the green-biased
 low-light input; EMA cold-start (validation uses `net_g_ema`, ~61% random init
-at iter 500) delays visible progress by 1-2K iters. Fixed in R49 via
-`residual_gray_world` + `ema_warmup`.
+at iter 500) delays visible progress by 1-2K iters. Fixed via a DECAYING
+gray-world residual (`gray_world_decay_start/end`) + `ema_warmup`.
 
-**Mid-training PSNR crash**: PSNR drops 3+ dB while SSIM/LPIPS keep improving =
-global brightness/color drift from unanchored illumination scale. Fixed in R49
-via `anchor_loss_weight` (pins bridge-endpoint channel means to GT).
+**Mid-training PSNR valley = phase transition (verified 2026-07-16)**: the
+network migrates to a higher-PSNR illumination regime; blocking it (from-0
+anchors) caps PSNR ~21.8, letting it run then LOCKING the achieved regime
+(`anchor_mode: x1_ema` + `anchor_start_iter`) produced the 22.689 champion.
 
 ## Architecture
 
@@ -91,11 +93,11 @@ via `anchor_loss_weight` (pins bridge-endpoint channel means to GT).
 
 ## Experiments
 
-**Active research**: R52 series (late x1_ema anchor, on r50a base)
+**Active research**: R53 series (exact lock + auto-engage, on r52b base)
 
-**Champion**: R48b (PSNR 22.21, SSIM 0.7959) — `channel_noise_scale` on bridge noise
+**Champion**: r52b (PSNR 22.689, SSIM 0.8042, LPIPS 0.1664 @ one checkpoint) — late frozen-EMA anchor
 
-**Historical**: R11-R51 archived in `legacy_training_scripts/` and `Options/`
+**Historical**: R11-R52 archived in `legacy_training_scripts/` and `Options/`
 
 Training logs and checkpoints: `experiments/<config-name>/` (disk-safe: single
 `latest.state` + `net_g_latest.pth`, images only for baseline & best)

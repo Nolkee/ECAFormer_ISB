@@ -50,18 +50,20 @@ data/LOLv1/
 
 ## Training
 
-### Recommended: current champion (R48b)
+### Recommended: current champion recipe (r52b)
 
 ```bash
-python -m basicsr.train --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml
+python -m basicsr.train --opt Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml
 ```
 
-**Expected result**: PSNR ~22.2 @ 11.5K iter, SSIM ~0.796
+**Expected result**: PSNR ~22.7 / SSIM ~0.804 / LPIPS ~0.166 at one checkpoint
+(~11.5K). Note: a mid-training PSNR valley around 6-9K is EXPECTED (phase
+transition) — do not stop the run; the anchor locks the recovered regime.
 
-### Active research: R52 series (late self-calibrating anchor)
+### Active research: R53 series (AAAI final round)
 
 ```bash
-bash train_r52_series.sh   # r52a/b (x1_ema anchor @ 12K/9K) -> r52c (r51c + zero-bias)
+bash train_r53_series.sh   # r53a (dz0) -> r53b (auto-engage) -> r53c (seed 3407)
 ```
 
 Training auto-resumes from `experiments/<name>/training_states/latest.state` if present.
@@ -93,8 +95,8 @@ bash diagnostic_scripts/monitor_training.sh
 
 ```bash
 python ECAFormer_inference.py \
-    --opt Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml \
-    --checkpoint experiments/<exp_name>/best_psnr_22.21_11500.pth \
+    --opt Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml \
+    --checkpoint experiments/<exp_name>/best_psnr_22.69_11500.pth \
     --input_dir <low_light_images> \
     --output_dir results/
 ```
@@ -166,5 +168,5 @@ python -m basicsr.train --opt <config>.yml
 ---
 
 **Dataset**: LOLv1/v2 Real
-**Champion config**: `Options/ISB_ecaformer_r48b_illum3ch_bridge_reweight.yml`
+**Champion config**: `Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml`
 **Training time**: ~24-48h (24K iter, single GPU; early stop usually triggers earlier)
