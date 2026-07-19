@@ -17,9 +17,8 @@ Low-light image enhancement using Image Schrödinger Bridge (ISB) with ECAFormer
 **Result**: PSNR 22.689 / SSIM 0.8042 / LPIPS 0.1664 — all at ONE checkpoint (11.5K)
 **Recipe**: R48b base + gray-world decay 1500-3500 + ema_warmup + x1_ema anchor
 (w0.5, deadzone 0.05, engage @ 9K, frozen-EMA target). Beat previous bests on
-PSNR (+0.48 dB) and SSIM simultaneously. AAAI headline model; verify the saved
-`best_psnr_*.pth` is the 11.5K checkpoint (metric-summary script showed a
-12.5K/11.5K discrepancy).
+PSNR (+0.48 dB) and SSIM simultaneously. AAAI headline model; the saved
+`best_psnr_*.pth` is CONFIRMED (2026-07-19) to be the 11.5K checkpoint.
 
 **Active research**: R53 series (`train_r53_series.sh`) — final pre-AAAI round.
 R52 verdict (2026-07-19): the phase-transition model delivered — r52b is the
