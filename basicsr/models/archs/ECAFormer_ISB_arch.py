@@ -298,13 +298,15 @@ class AdaLayerNorm(nn.Module):
 
 class DMSABlock(nn.Module):
     """Original ECAFormer block (no time conditioning)."""
-    def __init__(self, dim, dim_head=64, heads=8, num_blocks=2):
+    def __init__(self, dim, dim_head=64, heads=8, num_blocks=2,
+                 use_eca=True, eca_gamma=2, eca_beta=1):
         super().__init__()
         self.blocks = nn.ModuleList([])
         for _ in range(num_blocks):
             self.blocks.append(nn.ModuleList([
                 DMSA(dim=dim, dim_head=dim_head, heads=heads),
-                PreNorm(dim, FeedForward(dim=dim))
+                PreNorm(dim, FeedForward(dim=dim, use_eca=use_eca,
+                                         eca_gamma=eca_gamma, eca_beta=eca_beta))
             ]))
 
     def forward(self, x, y):
@@ -643,7 +645,8 @@ class ECAFormerISB(nn.Module):
                  identity_scale_init=None, learnable_identity_scale=False,
                  identity_scale_warmup_iters=0, adaln_init_scale=0.0,
                  channel_noise_scale=None, residual_gray_world=False,
-                 gray_world_decay_start=0, gray_world_decay_end=0, **kwargs):
+                 gray_world_decay_start=0, gray_world_decay_end=0,
+                 raw_lq_endpoint=False, **kwargs):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -666,6 +669,12 @@ class ECAFormerISB(nn.Module):
         self.inference_output_clamp = bool(inference_output_clamp)
         self.illumination_map_activation = str(illumination_map_activation).lower()
         self.pre_denoiser_x1_clamp = bool(pre_denoiser_x1_clamp)
+        # Endpoint ablation (paper): bridge from the RAW low-light image
+        # (I2SB-style degraded boundary) instead of the illumination-lifted x1.
+        # The estimator still runs and conditions the denoiser via visual_fea;
+        # only the bridge boundary changes. Applies identically in train and
+        # inference (constant, not scheduled).
+        self.raw_lq_endpoint = bool(raw_lq_endpoint)
         self.illumination_channels = int(illumination_channels)
         self.use_out_norm = use_out_norm
         self.residual_scale_init = residual_scale_init
@@ -883,6 +892,8 @@ class ECAFormerISB(nn.Module):
         else:
             current_scale = self.identity_scale
         x1 = x_low * illu_map + current_scale.to(dtype=x_low.dtype) * x_low
+        if self.raw_lq_endpoint:
+            x1 = x_low
         if self.pre_denoiser_x1_clamp:
             x1 = torch.clamp(x1, 0.0, 1.0)
         bridge_base = self._get_bridge_base(x_low, x1)
@@ -953,10 +964,12 @@ class ECAFormerISB(nn.Module):
 
 class CrossAttenUnet(nn.Module):
     """Original ECAFormer U-Net without time conditioning."""
-    def __init__(self, in_dim=3, out_dim=3, dim=31, level=2, num_blocks=None):
+    def __init__(self, in_dim=3, out_dim=3, dim=31, level=2, num_blocks=None,
+                 use_eca=True, eca_gamma=2, eca_beta=1):
         super().__init__()
         if num_blocks is None:
             num_blocks = [2, 4, 4]
+        eca_kwargs = dict(use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta)
         self.dim = dim
         self.level = level
         self.embedding = nn.Conv2d(in_dim, self.dim, 3, 1, 1, bias=False)
@@ -965,14 +978,14 @@ class CrossAttenUnet(nn.Module):
         for i in range(level):
             self.encoder_layers.append(nn.ModuleList([
                 DMSABlock(dim=dim_level, num_blocks=num_blocks[i],
-                          dim_head=dim, heads=dim_level // dim),
+                          dim_head=dim, heads=dim_level // dim, **eca_kwargs),
                 nn.Conv2d(dim_level, dim_level * 2, 4, 2, 1, bias=False),
                 nn.Conv2d(dim_level, dim_level * 2, 4, 2, 1, bias=False)
             ]))
             dim_level *= 2
         self.bottleneck = DMSABlock(
             dim=dim_level, dim_head=dim, heads=dim_level // dim,
-            num_blocks=num_blocks[-1])
+            num_blocks=num_blocks[-1], **eca_kwargs)
         self.decoder_layers = nn.ModuleList([])
         for i in range(level):
             self.decoder_layers.append(nn.ModuleList([
@@ -983,7 +996,7 @@ class CrossAttenUnet(nn.Module):
                 nn.Conv2d(dim_level, dim_level // 2, 1, 1, bias=False),
                 nn.Conv2d(dim_level, dim_level // 2, 1, 1, bias=False),
                 DMSABlock(dim=dim_level // 2, num_blocks=num_blocks[level - 1 - i],
-                          dim_head=dim, heads=(dim_level // 2) // dim),
+                          dim_head=dim, heads=(dim_level // 2) // dim, **eca_kwargs),
             ]))
             dim_level //= 2
         self.mapping = nn.Conv2d(self.dim * 2, out_dim, 3, 1, 1, bias=False)
@@ -1024,7 +1037,8 @@ class ECAFormerBaseline(nn.Module):
     """
 
     def __init__(self, in_channels=3, out_channels=3, n_feat=40,
-                 level=2, num_blocks=None, stage=1, **kwargs):
+                 level=2, num_blocks=None, stage=1,
+                 use_eca=True, eca_gamma=2, eca_beta=1, **kwargs):
         super().__init__()
         if num_blocks is None:
             num_blocks = [1, 2, 2]
@@ -1033,6 +1047,7 @@ class ECAFormerBaseline(nn.Module):
         self.unet = CrossAttenUnet(
             in_dim=in_channels, out_dim=out_channels,
             dim=n_feat, level=level, num_blocks=num_blocks,
+            use_eca=use_eca, eca_gamma=eca_gamma, eca_beta=eca_beta,
         )
 
     def forward(self, img):
