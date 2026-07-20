@@ -1,14 +1,67 @@
 # AAAI-27 Abstract Registration (due 2026-07-22 19:59 Beijing)
 
-Two-way wording: every claim below is already data-backed and survives BOTH
-endings (method resurrection via fair24k, or analysis framing). Direction-
-specific claims are deferred to the full paper (7/29), where the abstract may
-be revised; the title is branch-agnostic and should not change.
+## FINAL CANDIDATE (user title + patched abstract, 2026-07-21)
 
-## Title (recommended)
+Title: Trainable Short Schrödinger Bridges for Low-Light Image Enhancement
 
-Illumination-Lifted Image Schrödinger Bridges for Low-Light Enhancement:
-Stable Training and a Controlled Account of What Generative Transport Buys
+Abstract:
+Low-light image enhancement (LLIE) is typically pursued either with one-step
+regression or with multi-step diffusion that transports images from pure
+noise. We instead formulate paired LLIE as a short Image Schrödinger Bridge
+between an illumination-lifted endpoint—produced by a jointly trained
+estimator—and the normal-light image. The nearby boundaries leave only a brief
+transport to learn, realized with an eight-step deterministic sampler and
+evaluated without GT-mean brightness alignment. Because the lifted endpoint is
+learnable, training exhibits endpoint drift and a mid-run phase transition; we
+stabilize optimization with a late self-calibrating endpoint anchor that
+freezes an exponential moving average of the achieved endpoint regime after
+recovery. With an ECAFormer-style denoiser, the model attains competitive
+fidelity on standard paired benchmarks at a fraction of the sampling cost of
+noise-initialized diffusion, and we give a controlled account—against the
+model's own regression backbone under matched budgets—of what the short bridge
+buys and what it does not. Our evaluation audit further reveals that the
+common LOL-v1-to-LOL-v2-Real transfer protocol is compromised: 99 of 100 test
+images appear in LOL-v1, inflating published cross-dataset claims. Together
+these provide a practical, honestly evaluated recipe for training short,
+learnable-boundary bridges for LLIE.
+
+Patch rationale: (1) "competitive ... perceptual scores" removed — LPIPS claim
+is not data-backed until fair24k lands (our 0.166 vs backbone 0.088 at
+mismatched protocol); replaced by the two-way "what it buys and what it does
+not" pivot, true in both endings. (2) Leakage sentence restored — the most
+bulletproof verified finding; steers reviewer assignment toward
+evaluation-aware reviewers and anchors the analysis branch. (3) LLIE expanded
+at first use.
+
+## User's original draft (2026-07-21, kept for reference)
+
+Title: Trainable Short Schrödinger Bridges for Low-Light Image Enhancement
+
+Abstract:
+Low-light image enhancement is typically pursued either with one-step
+regression or with multi-step diffusion that transports images from pure
+noise. We instead formulate paired LLIE as a short Image Schrödinger Bridge
+between an illumination-lifted endpoint—produced by a jointly trained
+estimator—and the normal-light image. The nearby boundaries leave only a brief
+transport to learn, realized with an eight-step deterministic sampler and
+evaluated without GT-mean brightness alignment. Because the lifted endpoint is
+learnable, training exhibits endpoint drift and a mid-run phase transition; we
+stabilize optimization with a late self-calibrating endpoint anchor that
+freezes an exponential moving average of the achieved endpoint regime after
+recovery. With an ECAFormer-style denoiser, the model attains competitive
+fidelity and perceptual scores on standard paired benchmarks while using far
+fewer sampling steps than noise-initialized diffusion. We further analyze
+endpoint choices and anchoring, providing a practical recipe for training
+short, learnable-boundary bridges for LLIE.
+
+Risk note on the original: "competitive ... perceptual scores" bets on the
+pending fair24k outcome; if kept, delete "and perceptual scores".
+
+## Earlier assistant draft (superseded, kept for reference)
+
+Title: Illumination-Lifted Image Schrödinger Bridges for Low-Light
+Enhancement: Stable Training and a Controlled Account of What Generative
+Transport Buys
 
 ### Alternates
 1. Bridging from Illumination: Training, Stabilizing, and Honestly Evaluating
