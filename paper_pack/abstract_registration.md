@@ -1,6 +1,36 @@
 # AAAI-27 Abstract Registration (due 2026-07-22 19:59 Beijing)
 
-## FINAL CANDIDATE (user title + patched abstract, 2026-07-21)
+## FINAL CANDIDATE v2 — plain AAAI style, short sentences (2026-07-21)
+
+Title: Trainable Short Schrödinger Bridges for Low-Light Image Enhancement
+
+Abstract:
+Low-light image enhancement (LLIE) has two main routes. One-step regression
+is fast but tied to its training conditions. Diffusion starts from pure noise
+and needs tens to hundreds of sampling steps. We take a third route. We build
+an Image Schrödinger Bridge between two close endpoints: a coarsely
+brightened image and its normal-light target. The brightened endpoint comes
+from a jointly trained illumination estimator. Because the endpoints are
+close, the bridge is short. Inference takes eight deterministic steps. We
+evaluate without GT-mean brightness alignment. The learnable endpoint creates
+a training problem. The endpoint drifts, and training passes through a
+mid-run collapse and recovery. We fix this with a late self-calibrating
+anchor. It tracks the achieved endpoint with an exponential moving average
+and freezes it after recovery. With an ECAFormer-style denoiser, the model
+reaches competitive fidelity on standard paired benchmarks at a small
+fraction of diffusion's sampling cost. We also run a control that bridge
+papers rarely run: the same backbone trained as a plain regressor under the
+same budget. This shows clearly what the bridge buys and what it does not.
+Finally, we audit the popular LOL-v1 to LOL-v2-Real transfer protocol. It is
+compromised: 99 of 100 test images already appear in LOL-v1, so published
+cross-dataset claims are inflated. Our results form a practical recipe for
+training short, learnable-boundary bridges.
+
+Style: short declarative sentences, no stacked clauses. Claims unchanged from
+v1: "competitive fidelity" only (no perceptual bet), two-way pivot ("what the
+bridge buys and what it does not"), leakage finding kept.
+
+## FINAL CANDIDATE v1 (user title + patched abstract, longer sentences)
 
 Title: Trainable Short Schrödinger Bridges for Low-Light Image Enhancement
 
