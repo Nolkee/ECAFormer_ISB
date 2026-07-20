@@ -578,7 +578,14 @@ class ImageCleanModel(BaseModel):
         if not os.path.exists(save_path):
             for r_file in glob.glob(f'{exp_root}/best_{metric_key}_*'):
                 os.remove(r_file)
-            net = self.net_g
+            if self.ema_decay > 0 and hasattr(self, 'net_g_ema'):
+                # Validation scores net_g_ema; a best checkpoint without the
+                # EMA weights cannot reproduce its logged metrics. Mirror
+                # save(): store both nets under ['params', 'params_ema'].
+                net = [self.net_g, self.net_g_ema]
+                param_key = ['params', 'params_ema']
+            else:
+                net = self.net_g
 
             net = net if isinstance(net, list) else [net]
             param_key = param_key if isinstance(
