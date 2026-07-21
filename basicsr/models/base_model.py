@@ -342,13 +342,17 @@ class BaseModel():
         net.load_state_dict(load_net, strict=strict)
 
     @master_only
-    def save_training_state(self, epoch, current_iter, **kwargs):
+    def save_training_state(self, epoch, current_iter, state_name='latest',
+                            **kwargs):
         """Save training states during training, which will be used for
         resuming.
 
         Args:
             epoch (int): Current epoch.
             current_iter (int): Current iteration.
+            state_name (str): Basename of the state file ('latest' for the
+                running state, 'best' for the best-PSNR snapshot). Both are
+                overwrite-only single files (disk-safe policy).
         """
         if current_iter != -1:
             state = {
@@ -379,7 +383,7 @@ class BaseModel():
             # iteration is stored inside `state['iter']`, so resume is unaffected.
             # Write-to-tmp + atomic replace: if the disk fills or the process
             # dies mid-write, the previous latest.state survives intact.
-            save_filename = 'latest.state'
+            save_filename = f'{state_name}.state'
             save_path = os.path.join(self.opt['path']['training_states'],
                                      save_filename)
             tmp_path = save_path + '.tmp'

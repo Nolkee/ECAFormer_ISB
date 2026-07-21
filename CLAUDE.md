@@ -109,8 +109,8 @@ Auto-resume: rerun the same command; it picks up `training_states/latest.state`
   (attr unset = -1) uses the TERMINAL schedule state — scheduled mechanisms must
   converge to their final value before `total_iter`
 - **Disk-space safety** (added 2026-06-23 after /dev/sda2 filled up):
-  - Training states: single overwrite-only `training_states/latest.state` (atomic tmp+replace). Legacy numeric `{iter}.state` files still resumable.
-  - Running weights: single overwrite-only `models/net_g_latest.pth`. Best checkpoints (`best_psnr_*.pth` etc., weights-only) unchanged.
+  - Training states: overwrite-only `training_states/latest.state` (atomic tmp+replace) PLUS `training_states/best.state` snapshotted at every new best PSNR (added 2026-07-21 after the r52b peak-EMA loss). Legacy numeric `{iter}.state` files still resumable.
+  - Running weights: single overwrite-only `models/net_g_latest.pth`. Best checkpoints (`best_psnr_*.pth` etc.) store BOTH `params` and `params_ema` since 2026-07-21 — validation scores net_g_ema, so pre-fix best files (bare `params` only) do NOT reproduce their logged metrics.
   - Validation images: memory-only metrics by default. Disk writes ONLY for one-time `visualization/baseline/` dump (first validation) and `visualization/best_results/` (overwritten on each new best PSNR). The `save_img` config flag is ignored during training.
 
 ## Deep Dive Documentation

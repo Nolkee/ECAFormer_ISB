@@ -450,6 +450,14 @@ def main():
                             if metric_name in metric_results:
                                 best_metric[metric_name] = metric_results[metric_name]
                     model.save_best(best_metric)
+                    # Snapshot the best moment as a resumable state too
+                    # (weights+EMA+optimizer+anchor state). Overwrite-only
+                    # `best.state` alongside `latest.state` — after the r52b
+                    # incident (peak EMA overwritten and lost), best moments
+                    # must survive on disk in full.
+                    model.save_training_state(epoch, current_iter,
+                                              state_name='best',
+                                              best_metric=best_metric)
                     # Disk-space safe: dump the current val visuals as the new best
                     # (overwrites prior best images so they never accumulate).
                     if hasattr(model, 'dump_best_visuals'):
