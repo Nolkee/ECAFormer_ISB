@@ -1,0 +1,68 @@
+{
+ "dir_a": "data/LOLv2Real/Test/Normal",
+ "dir_b": "data/LOLv1/Test/target",
+ "n_a": 100,
+ "n_b": 15,
+ "thresh_raw": 0.02,
+ "thresh_norm": 0.25,
+ "n_near_exact": 8,
+ "n_same_scene": 8,
+ "matches": [
+  {
+   "a": "00747.png",
+   "b_nearest": "748.png",
+   "raw_l1": 0.0083,
+   "norm_l1": 0.06767,
+   "near_exact": true
+  },
+  {
+   "a": "00748.png",
+   "b_nearest": "748.png",
+   "raw_l1": 0.0083,
+   "norm_l1": 0.06767,
+   "near_exact": true
+  },
+  {
+   "a": "00775.png",
+   "b_nearest": "778.png",
+   "raw_l1": 0.00754,
+   "norm_l1": 0.0402,
+   "near_exact": true
+  },
+  {
+   "a": "00776.png",
+   "b_nearest": "778.png",
+   "raw_l1": 0.00754,
+   "norm_l1": 0.0402,
+   "near_exact": true
+  },
+  {
+   "a": "00777.png",
+   "b_nearest": "778.png",
+   "raw_l1": 0.00754,
+   "norm_l1": 0.0402,
+   "near_exact": true
+  },
+  {
+   "a": "00778.png",
+   "b_nearest": "778.png",
+   "raw_l1": 0.00754,
+   "norm_l1": 0.0402,
+   "near_exact": true
+  },
+  {
+   "a": "00779.png",
+   "b_nearest": "780.png",
+   "raw_l1": 0.00583,
+   "norm_l1": 0.03202,
+   "near_exact": true
+  },
+  {
+   "a": "00780.png",
+   "b_nearest": "780.png",
+   "raw_l1": 0.00583,
+   "norm_l1": 0.03202,
+   "near_exact": true
+  }
+ ]
+}

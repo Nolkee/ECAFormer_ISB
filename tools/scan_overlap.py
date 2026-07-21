@@ -49,6 +49,8 @@ def main():
     p.add_argument('--thresh-norm', type=float, default=0.25,
                    help='z-normalized L1/px same-scene threshold (default 0.25)')
     p.add_argument('--show', type=int, default=10, help='closest pairs to print')
+    p.add_argument('--dump-matches', default=None, metavar='JSON',
+                   help='write matched pairs (under thresholds) to a JSON file')
     args = p.parse_args()
 
     files_a, A = thumbs(args.dir_a)
@@ -75,6 +77,33 @@ def main():
     dup_raw = int((nn_raw < args.thresh_raw).sum())
     dup_nrm = int((nn_nrm < args.thresh_norm).sum())
     n = len(files_a)
+
+    if args.dump_matches:
+        import json
+        import os
+        matches = []
+        for i in range(n):
+            if nn_nrm[i] < args.thresh_norm or nn_raw[i] < args.thresh_raw:
+                j = int(idx_nrm[i])
+                matches.append({
+                    'a': osp.basename(files_a[i]),
+                    'b_nearest': osp.basename(files_b[j]),
+                    'raw_l1': round(float(nn_raw[i]), 5),
+                    'norm_l1': round(float(nn_nrm[i]), 5),
+                    'near_exact': bool(nn_raw[i] < args.thresh_raw),
+                })
+        payload = {
+            'dir_a': args.dir_a, 'dir_b': args.dir_b,
+            'n_a': n, 'n_b': len(files_b),
+            'thresh_raw': args.thresh_raw, 'thresh_norm': args.thresh_norm,
+            'n_near_exact': dup_raw, 'n_same_scene': dup_nrm,
+            'matches': matches,
+        }
+        os.makedirs(osp.dirname(osp.abspath(args.dump_matches)), exist_ok=True)
+        with open(args.dump_matches, 'w') as f:
+            json.dump(payload, f, indent=1)
+        print(f'match list -> {args.dump_matches} ({len(matches)} entries)')
+
     print(f'\nOVERLAP: {dup_raw}/{n} near-exact (raw_l1 < {args.thresh_raw}); '
           f'{dup_nrm}/{n} same-scene (norm_l1 < {args.thresh_norm})')
     if dup_nrm > 0.2 * n:

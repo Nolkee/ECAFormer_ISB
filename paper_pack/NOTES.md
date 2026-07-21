@@ -27,10 +27,19 @@ baseline 侧无此问题（老式按迭代存档带双 key，45K EMA 完整）�
 
 ## 3. 跨域探针——LOLv2-Real 路线已作废（数据泄漏），改用 LOLv2-Synthetic
 
-**泄漏发现（2026-07-20，tools/scan_overlap.py，32×32 缩略图 L1）**：
-LOLv2-Real Test(100) 中 **91 张与 LOLv1 Train 逐像素相同**（raw_l1≈0.0000，文件名直接对应
-`00690.png`↔`690.png`），另 **8 张与 LOLv1 Test 重叠** → 合计 99/100 泄漏。
-LOLv1→LOLv2-Real 的"零样本跨域"因此无效。作为泄漏演示保留的数字（不得当泛化证据）：
+**泄漏发现（2026-07-20/21，tools/scan_overlap.py，完整四方向审计，机器可读清单在 paper_pack/leakage/*.json）**：
+
+| 方向 | 近逐像素 | 同场景 |
+|---|---|---|
+| v2-Real Test vs v1 Train | **91/100** | 91/100 |
+| v2-Real Test vs v1 Test | 8/100 | 8/100 |
+| v2-Real Train vs v1 Test | 18/689 | 35/689 |
+| v2-Real Train vs v1 Train | **436/689** | 492/689 |
+
+即 LOL-v2-Real ≈ LOL-v1 重分配 + ~30% 新帧（文件名直接对应 `00690.png`↔`690.png`）。
+结论：v1↔v2Real 任一方向的跨集迁移都无效；v2 原生（官方内部分割）保留为 benchmark 行 +
+脚注；v2→v1 迁移如需恢复，用 leakage 清单剔除 v2-train 中 35 张同场景后重训（可选）。
+LOLv1→LOLv2-Real 的"零样本"数字仅作泄漏演示（baseline 31.5 dB = 记忆分）。
 
 | 工件 | LOLv1 (源域) | LOLv2-Real 零样本(泄漏) |
 |---|---|---|
