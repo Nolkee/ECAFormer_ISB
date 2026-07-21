@@ -26,14 +26,45 @@ python -m basicsr.train --opt Options/ISB_ecaformer_r52b_late_ema_anchor_9k.yml
 **Key**: let the mid-training phase transition happen, then lock the achieved
 illumination regime with a frozen-EMA anchor (`anchor_mode: x1_ema` @ 9K)
 
-**Active research (R53, final pre-AAAI)**: r52b validated the phase-transition
-design but sagged -0.76 dB after its peak (the 0.05 deadzone let slow drift
-escape) and the transition timing is stochastic (fixed engage iters can land
-after the peak, as r52a's did). R53: exact lock (deadzone 0) + auto-engage at
-the train-PSNR recovery turn (12K hard cap, state persisted across resume) +
-a second seed for mean±std. Generalization config for the paper:
-`Options/ISB_ecaformer_r53_lolv2real.yml`.
+**R53 outcome (2026-07-20)**: r52b stays champion. r53b validated auto-engage
+(22.59 @ 14K; the anchor waits for the recovery turn instead of a fixed iter —
+this de-lucks the stochastic transition timing and is the recommended default).
+r53c (seed 3407) collapsed from init (~10 dB) — the recipe has a bad-basin
+sensitivity that we disclose as a limitation.
 See [docs/COLOR_SHIFT_ROOT_CAUSE.md](docs/COLOR_SHIFT_ROOT_CAUSE.md).
+
+## Paper prep (AAAI-27) — evidence rules
+
+All paper numbers come from `paper_pack/NOTES.md` (single source of truth) and
+are produced by the unified evaluator, which reuses the training validation
+code path exactly (no GT-mean anywhere, LPIPS-alex, crop_border 0, best
+validation checkpoint, three metrics at one checkpoint):
+
+```bash
+# evaluate any checkpoint (reproduces training-val numbers bit-exactly)
+python tools/eval_lol.py --opt Options/ISB_ecaformer_r54_repro_r52b.yml \
+    --ckpt <best_psnr_*.pth> --param-key params_ema --out paper_pack/metrics/eval.csv
+# NFE sweep without retraining:  --inference-steps {2,4,16}
+# cross-dataset probe:           --dataroot-lq/--dataroot-gt overrides
+```
+
+Contributions under test: (1) illumination-lifted short bridge, 8-step
+deterministic sampling; (2) endpoint-drift / phase-transition analysis + late
+self-calibrating anchor (auto-engage validated); (3) controlled matched-budget
+comparison against the same backbone (`run_paper_p1_queue.sh`: r54 champion
+rerun, fair24k baseline pair, LOLv2-Real pair; `run_paper_p2_followup.sh`:
+NFE sweep + x1-endpoint ablation).
+
+Known evidence constraints (do not overclaim in docs or comments):
+- Best checkpoints saved before 2026-07-20 hold bare (non-EMA) weights and do
+  NOT reproduce their logged metrics (validation scores `net_g_ema`; fixed —
+  `save_best` now stores `params` + `params_ema`).
+- LOL-v2-Real Test overlaps LOL-v1 by 99/100 images (91 pixel-identical to
+  v1-Train); LOLv1→LOLv2-Real "cross-dataset" transfer numbers are leaked and
+  must not be used as generalization evidence (`tools/scan_overlap.py`).
+- Cross-domain claims require the clean probe (LOL-v2-Synthetic, verified
+  disjoint). Current measurement: the bridge does not transfer better than its
+  regression backbone — report as measured; do not write "proven robust".
 
 ## Project Structure
 
