@@ -1,0 +1,4 @@
+model,params_M,nfe,source,notes
+ECAFormerISB_n80,10.961,8,r54 best ckpt (exact state_dict count),champion family
+ECAFormerBaseline_n40_noECA,2.504,1,net_g_45000.pth (exact),250K-protocol run; 4.4x fewer params than ISB yet dominates converged LOLv1 (23.26/0.8376/0.0882) — disclose in paper
+ECAFormerBaseline_n80_eca15,9.911,1,instantiated from fair24k yml,matched-budget matched-param control (fair24k run in progress)
