@@ -67,7 +67,13 @@ class ImageCleanModel(BaseModel):
         super(ImageCleanModel, self).__init__(opt)
 
         # define mixed precision
-        self.use_amp = opt.get('use_amp', False) and load_amp
+        # Accept use_amp from either the top level or the train section.
+        # ImageISBModel hoists train.use_amp to the top level before calling
+        # this __init__, but plain-baseline configs instantiate this class
+        # directly — without this fallback they silently run fp32 and OOM at
+        # the matched batch/patch (fair24k, 2026-07-23).
+        self.use_amp = (opt.get('use_amp', False)
+                        or opt.get('train', {}).get('use_amp', False)) and load_amp
         self.amp_scaler = GradScaler(enabled=self.use_amp)
         if self.use_amp:
             print('Using Automatic Mixed Precision')
