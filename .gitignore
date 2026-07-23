@@ -65,3 +65,7 @@ ECA_reference/
 # Jupyter
 .ipynb_checkpoints/
 key.pem
+
+# Paper materials (local only — do not push manuscripts / AuthorKit / paper numbers)
+AuthorKit27/
+paper_pack/
