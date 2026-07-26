@@ -561,8 +561,13 @@ def main():
     logger.info('Save the latest model.')
     model.save(epoch=-1, current_iter=-1)  # -1 stands for the latest
     if opt.get('val') is not None:
+        # Mirror the in-loop call (line ~404): without rgb2bgr/use_image this
+        # final validation silently fell back to use_image=True and printed a
+        # number under a different protocol than every row in metric.csv.
         model.validation(val_loader, current_iter, tb_logger,
-                         opt['val']['save_img'])
+                         opt['val']['save_img'],
+                         opt['val'].get('rgb2bgr', True),
+                         opt['val'].get('use_image', True))
     if tb_logger:
         tb_logger.close()
 
